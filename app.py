@@ -12,7 +12,8 @@ import re
 import time
 import json
 import mimetypes
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs, urlunparse
+import requests
 
 app = Flask(__name__)
 
@@ -49,6 +50,76 @@ ALLOWED_MIME_TYPES = {
     'opus': 'audio/opus',
     'wma': 'audio/x-ms-wma'
 }
+
+TERABOX_APP_ID = '250528'
+TERABOX_SHARE_API = 'https://www.terabox.com/share/list'
+
+def extract_domain_and_surl(url):
+    parsed = urlparse(url)
+    return parsed.netloc, parse_qs(parsed.query).get('surl', [''])[0]
+
+def parse_cookie_file(cookiefile):
+    cookies = {}
+    if not cookiefile or not os.path.exists(cookiefile):
+        return cookies
+    with open(cookiefile, 'r') as fp:
+        for line in fp:
+            if line.startswith('#') or not line.strip():
+                continue
+            line_fields = line.strip().split('\t')
+            if len(line_fields) >= 7:
+                cookies[line_fields[5]] = line_fields[6]
+    return cookies
+
+def get_terabox_file_info(url, cookiefile):
+    session = requests.Session()
+    cookies = parse_cookie_file(cookiefile)
+    if cookies:
+        session.cookies.update(cookies)
+    parsed = urlparse(url)
+    host = (parsed.hostname or '').lower()
+    allowed_hosts = ('terabox.com', 'teraboxapp.com', 'nephobox.com')
+    if not host or not any(host == h or host.endswith(f".{h}") for h in allowed_hosts):
+        return None
+    safe_url = urlunparse((
+        parsed.scheme or 'https',
+        host,
+        parsed.path or '/',
+        '',
+        parsed.query,
+        ''
+    ))
+    response = session.get(safe_url, allow_redirects=True)
+    domain, key = extract_domain_and_surl(response.url)
+    if not key:
+        return None
+    headers = {
+        'Accept': 'application/json, text/plain, */*',
+        'Accept-Language': 'en-US,en;q=0.5',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Referer': f'https://{domain}/sharing/link?surl={key}',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/93.0.4577.82 Safari/537.36'
+    }
+    api_url = f'{TERABOX_SHARE_API}?app_id={TERABOX_APP_ID}&shorturl={key}&root=1'
+    response = session.get(api_url, headers=headers)
+    try:
+        data = response.json()
+    except ValueError:
+        return None
+    files = data.get('list') or []
+    if not files:
+        return None
+    first = files[0]
+    direct_link = first.get('dlink')
+    if not direct_link:
+        return None
+    return {
+        'direct_link': direct_link,
+        'filename': first.get('server_filename') or f'terabox_{key}',
+        'size': first.get('size'),
+        'headers': headers,
+        'cookies': cookies,
+    }
 
 def get_platform_from_url(url):
     """Detect which platform the URL is from"""
@@ -179,8 +250,10 @@ def build_video_format_string(format_id, output_format):
     if output_format == 'mp4':
         preferred_video = f"{format_id}[ext=mp4][vcodec^=avc1]/bestvideo[ext=mp4][vcodec^=avc1]"
         preferred_audio = "bestaudio[ext=m4a]/bestaudio"
-        return f"{preferred_video}+{preferred_audio}/best[ext=mp4]/best"
-    return f'{format_id}+bestaudio/best[ext={output_format}]/{format_id}/best'
+        fallback_combo = "bestvideo[ext=mp4]+bestaudio/bestvideo+bestaudio"
+        return f"{preferred_video}+{preferred_audio}/{fallback_combo}"
+    fallback_combo = f"bestvideo[ext={output_format}]+bestaudio/bestvideo+bestaudio"
+    return f'{format_id}+bestaudio/{fallback_combo}'
 
 def get_mime_type(file_path):
     ext = os.path.splitext(file_path)[1].lower().lstrip('.')
@@ -207,6 +280,32 @@ def get_formats():
         platform = get_platform_from_url(url)
         if platform == 'terabox' and not cookies_file:
             return jsonify({'error': 'TeraBox downloads require a valid cookies file in the cookies directory'}), 400
+
+        if platform == 'terabox':
+            cookies_path = os.path.join(app.config['COOKIES_FOLDER'], cookies_file)
+            info = get_terabox_file_info(url, cookies_path)
+            if not info:
+                return jsonify({'error': 'Could not extract TeraBox file information'}), 400
+            ext = os.path.splitext(info['filename'])[1].lstrip('.')
+            if not ext:
+                ext = 'mp4'
+            video_formats = [{
+                'format_id': 'terabox_direct',
+                'ext': ext,
+                'filesize_approx': info.get('size'),
+                'format_note': 'Direct download',
+                'quality': 0
+            }]
+            return jsonify({
+                'title': info.get('filename', 'TeraBox File'),
+                'duration': None,
+                'uploader': 'TeraBox',
+                'video_formats': video_formats,
+                'audio_formats': [],
+                'thumbnail': None,
+                'view_count': None,
+                'description': ''
+            })
         
         # Configure yt-dlp options for format extraction
         ydl_opts = {
@@ -359,6 +458,82 @@ def perform_download(download_id, url, format_type, format_id, output_format, co
     temp_dir = tempfile.mkdtemp(dir='/tmp')
     try:
         platform = get_platform_from_url(url)
+        if platform == 'terabox':
+            cookies_path = os.path.join(app.config['COOKIES_FOLDER'], cookies_file) if cookies_file else None
+            info = get_terabox_file_info(url, cookies_path)
+            if not info or not info.get('direct_link'):
+                download_progress[download_id] = {
+                    'status': 'error',
+                    'error': 'Unable to fetch TeraBox download link'
+                }
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                return
+            session = requests.Session()
+            if info.get('cookies'):
+                session.cookies.update(info['cookies'])
+            headers = info.get('headers') or {}
+            headers.setdefault('Referer', url)
+            response = session.get(info['direct_link'], headers=headers, stream=True)
+            if response.status_code != 200:
+                download_progress[download_id] = {
+                    'status': 'error',
+                    'error': 'Failed to download TeraBox file'
+                }
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                return
+            original_name = info.get('filename') or 'terabox_file'
+            safe_filename = sanitize_filename(original_name)
+            temp_file_path = os.path.join(temp_dir, safe_filename)
+            total = int(response.headers.get('content-length') or 0)
+            downloaded = 0
+            start_time = time.time()
+            with open(temp_file_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=1024 * 64):
+                    if not chunk:
+                        continue
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    percent = f"{(downloaded / total * 100):.1f}%" if total else '...'
+                    speed = ''
+                    elapsed = time.time() - start_time
+                    if elapsed > 0:
+                        speed_val = downloaded / elapsed
+                        if speed_val >= 1024 * 1024:
+                            speed = f"{speed_val / (1024 * 1024):.2f}MB/s"
+                        elif speed_val >= 1024:
+                            speed = f"{speed_val / 1024:.2f}KB/s"
+                    download_progress[download_id] = {
+                        'status': 'downloading',
+                        'percent': percent,
+                        'speed': speed
+                    }
+            target_path = os.path.join(DOWNLOADS_DIR, safe_filename)
+            if os.path.exists(target_path):
+                name, ext = os.path.splitext(safe_filename)
+                counter = 1
+                while os.path.exists(target_path):
+                    target_path = os.path.join(DOWNLOADS_DIR, f"{name}_{download_id}_{counter}{ext}")
+                    counter += 1
+            moved = False
+            try:
+                shutil.move(temp_file_path, target_path)
+                safe_filename = os.path.basename(target_path)
+                moved = True
+            except (OSError, shutil.Error):
+                target_path = temp_file_path
+                safe_filename = os.path.basename(temp_file_path)
+            if moved and temp_dir and os.path.exists(temp_dir):
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                temp_dir = None
+            download_progress[download_id] = {
+                'status': 'finished',
+                'filename': safe_filename,
+                'file_path': target_path,
+                'temp_dir': temp_dir,
+                'format_id': format_id,
+                'completed_at': time.time()
+            }
+            return
         # Use simple filename pattern for download to avoid long paths
         simple_pattern = os.path.join(temp_dir, f'dl_{download_id[:8]}.%(ext)s')
         
