@@ -17,6 +17,7 @@ A powerful Flask-based web application for downloading videos and audio from mul
 - 🎥 YouTube
 - 📘 Facebook
 - 📷 Instagram
+- 📦 TeraBox (with cookies)
 - 🐦 Twitter
 - 📺 Vimeo
 - 🎵 SoundCloud
@@ -26,6 +27,7 @@ A powerful Flask-based web application for downloading videos and audio from mul
 
 ### Advanced Features
 - **Cookies Support**: Upload cookies.txt for private/age-restricted content
+- **Inline Playback**: Play completed downloads directly in the browser
 - **Progress Tracking**: Real-time download progress with speed monitoring
 - **Download Management**: View and download previously saved files
 - **Responsive Design**: Works perfectly on desktop and mobile devices

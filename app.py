@@ -11,6 +11,8 @@ import shutil
 import re
 import time
 import json
+import mimetypes
+from urllib.parse import urlparse
 
 app = Flask(__name__)
 
@@ -28,21 +30,47 @@ os.makedirs(COOKIES_FOLDER, exist_ok=True)
 DOWNLOADS_DIR = 'downloads'
 os.makedirs(DOWNLOADS_DIR, exist_ok=True)
 
+FASTSTART_ARGS = ['-movflags', '+faststart']
+MP4_SAFE_ARGS = ['-c:v', 'libx264', '-profile:v', 'high', '-level', '4.0', '-c:a', 'aac', '-b:a', '192k', '-ac', '2']
+ALLOWED_MIME_TYPES = {
+    'mp4': 'video/mp4',
+    'mkv': 'video/x-matroska',
+    'mov': 'video/quicktime',
+    'webm': 'video/webm',
+    'flv': 'video/x-flv',
+    '3gp': 'video/3gpp',
+    'avi': 'video/x-msvideo',
+    'mp3': 'audio/mpeg',
+    'm4a': 'audio/mp4',
+    'flac': 'audio/flac',
+    'wav': 'audio/wav',
+    'ogg': 'audio/ogg',
+    'aac': 'audio/aac',
+    'opus': 'audio/opus',
+    'wma': 'audio/x-ms-wma'
+}
+
 def get_platform_from_url(url):
     """Detect which platform the URL is from"""
-    if 'youtube.com' in url or 'youtu.be' in url:
+    parsed = urlparse(url)
+    host = (parsed.hostname or parsed.netloc or url).lower().split(':')[0]
+    if host.startswith('www.'):
+        host = host[4:]
+    if host in ('youtube.com', 'youtu.be') or host.endswith('.youtube.com'):
         return 'youtube'
-    elif 'facebook.com' in url:
+    elif host == 'facebook.com' or host.endswith('.facebook.com'):
         return 'facebook'
-    elif 'instagram.com' in url:
+    elif host == 'instagram.com' or host.endswith('.instagram.com'):
         return 'instagram'
-    elif 'tiktok.com' in url:
+    elif host in ('terabox.com', 'teraboxapp.com', 'nephobox.com') or host.endswith('.terabox.com') or host.endswith('.teraboxapp.com') or host.endswith('.nephobox.com'):
+        return 'terabox'
+    elif host == 'tiktok.com' or host.endswith('.tiktok.com'):
         return 'tiktok'
-    elif 'twitter.com' in url or 'x.com' in url:
+    elif host in ('twitter.com', 'x.com') or host.endswith('.twitter.com') or host.endswith('.x.com'):
         return 'twitter'
-    elif 'vimeo.com' in url:
+    elif host == 'vimeo.com' or host.endswith('.vimeo.com'):
         return 'vimeo'
-    elif 'dailymotion.com' in url:
+    elif host == 'dailymotion.com' or host.endswith('.dailymotion.com'):
         return 'dailymotion'
     else:
         return 'all'
@@ -144,6 +172,23 @@ def get_safe_filename(title, format_type, format_ext, max_length=150):
     
     return filename
 
+def build_video_format_string(format_id, output_format):
+    """Build a resilient yt-dlp format string that keeps audio/video together"""
+    if format_id in ['best', 'worst']:
+        return format_id
+    if output_format == 'mp4':
+        preferred_video = f"{format_id}[ext=mp4][vcodec^=avc1]/bestvideo[ext=mp4][vcodec^=avc1]"
+        preferred_audio = "bestaudio[ext=m4a]/bestaudio"
+        return f"{preferred_video}+{preferred_audio}/best[ext=mp4]/best"
+    return f'{format_id}+bestaudio/best[ext={output_format}]/{format_id}/best'
+
+def get_mime_type(file_path):
+    ext = os.path.splitext(file_path)[1].lower().lstrip('.')
+    return ALLOWED_MIME_TYPES.get(ext) or (mimetypes.guess_type(file_path)[0] or 'application/octet-stream')
+
+def is_valid_download_id(download_id):
+    return bool(re.fullmatch(r'[a-f0-9\-]{32,36}', str(download_id)))
+
 @app.route('/')
 def index():
     return render_template('index.html')
@@ -159,6 +204,9 @@ def get_formats():
         
         # Get appropriate cookie file for this URL
         cookies_file = get_cookie_file_for_url(url)
+        platform = get_platform_from_url(url)
+        if platform == 'terabox' and not cookies_file:
+            return jsonify({'error': 'TeraBox downloads require a valid cookies file in the cookies directory'}), 400
         
         # Configure yt-dlp options for format extraction
         ydl_opts = {
@@ -175,6 +223,9 @@ def get_formats():
             cookies_path = os.path.join(app.config['COOKIES_FOLDER'], cookies_file)
             if os.path.exists(cookies_path):
                 ydl_opts['cookiefile'] = cookies_path
+        
+        if platform == 'terabox':
+            ydl_opts['http_headers']['Referer'] = url
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             try:
@@ -281,6 +332,9 @@ def download_video():
         
         # Get appropriate cookie file for this URL
         cookies_file = get_cookie_file_for_url(url)
+        platform = get_platform_from_url(url)
+        if platform == 'terabox' and not cookies_file:
+            return jsonify({'error': 'TeraBox downloads need a cookies file in the cookies directory'}), 400
         print(f"Using cookie file: {cookies_file} for URL: {url}")
         
         download_id = str(uuid.uuid4())
@@ -304,6 +358,7 @@ def perform_download(download_id, url, format_type, format_id, output_format, co
     # Use a shorter temp directory
     temp_dir = tempfile.mkdtemp(dir='/tmp')
     try:
+        platform = get_platform_from_url(url)
         # Use simple filename pattern for download to avoid long paths
         simple_pattern = os.path.join(temp_dir, f'dl_{download_id[:8]}.%(ext)s')
         
@@ -316,6 +371,8 @@ def perform_download(download_id, url, format_type, format_id, output_format, co
             'writeinfojson': False,
             'ignoreerrors': False,
             'no_warnings': False,
+            'merge_output_format': output_format,
+            'prefer_ffmpeg': True,
             'http_headers': {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
             },
@@ -329,6 +386,9 @@ def perform_download(download_id, url, format_type, format_id, output_format, co
             if os.path.exists(cookies_path):
                 ydl_opts['cookiefile'] = cookies_path
                 print(f"Using cookies from: {cookies_path}")
+        
+        if platform == 'terabox':
+            ydl_opts['http_headers']['Referer'] = url
         
         # Set the format based on user selection
         if format_type == 'audio':
@@ -351,24 +411,16 @@ def perform_download(download_id, url, format_type, format_id, output_format, co
                 
         else:  # video
             # For video downloads, ensure we get both video and audio
-            if format_id in ['best', 'worst']:
-                # Use best/worst which includes both video and audio
-                ydl_opts['format'] = format_id
-            else:
-                # For specific format IDs, try to combine with audio
-                # This ensures compatibility with native players
-                ydl_opts['format'] = f'{format_id}+bestaudio/best[ext={output_format}]/{format_id}/best'
+            ydl_opts['format'] = build_video_format_string(format_id, output_format)
             
             # Set up video post-processing for format conversion
             postprocessors = []
             
-            # Add video converter if needed
-            if output_format != 'mp4':  # Only convert if not mp4
-                if output_format in ['mkv', 'avi', 'mov', 'webm', 'flv', '3gp']:
-                    postprocessors.append({
-                        'key': 'FFmpegVideoConvertor',
-                        'preferedformat': output_format,
-                    })
+            if output_format in ['mp4', 'mkv', 'avi', 'mov', 'webm', 'flv', '3gp']:
+                postprocessors.append({
+                    'key': 'FFmpegVideoConvertor',
+                    'preferedformat': output_format,
+                })
             
             # Always add metadata and ensure proper encoding for compatibility
             postprocessors.append({
@@ -378,6 +430,10 @@ def perform_download(download_id, url, format_type, format_id, output_format, co
             
             if postprocessors:
                 ydl_opts['postprocessors'] = postprocessors
+                ffmpeg_args = list(FASTSTART_ARGS)
+                if output_format == 'mp4':
+                    ffmpeg_args.extend(MP4_SAFE_ARGS)
+                ydl_opts['postprocessor_args'] = {'FFmpegVideoConvertor': ffmpeg_args}
         
         # Download the video
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -423,12 +479,35 @@ def perform_download(download_id, url, format_type, format_id, output_format, co
                             
                             # Verify the file exists and is accessible
                             if os.path.exists(final_file_path) and os.path.getsize(final_file_path) > 0:
+                                target_path = os.path.join(DOWNLOADS_DIR, safe_filename)
+                                if os.path.exists(target_path):
+                                    name, ext = os.path.splitext(safe_filename)
+                                    counter = 1
+                                    while os.path.exists(target_path):
+                                        target_path = os.path.join(DOWNLOADS_DIR, f"{name}_{download_id}_{counter}{ext}")
+                                        counter += 1
+                                target_name = os.path.basename(target_path)
+                                moved = False
+                                try:
+                                    shutil.move(final_file_path, target_path)
+                                    final_file_path = target_path
+                                    safe_filename = target_name
+                                    moved = True
+                                except Exception as move_err:
+                                    print(f"Move failed for {final_file_path} -> {target_path}: {move_err}")
+                                    safe_filename = os.path.basename(final_file_path)
+
+                                if moved and temp_dir and os.path.exists(temp_dir):
+                                    shutil.rmtree(temp_dir, ignore_errors=True)
+                                    temp_dir = None
+
                                 download_progress[download_id] = {
                                     'status': 'finished',
                                     'filename': safe_filename,
                                     'file_path': final_file_path,
                                     'temp_dir': temp_dir,
-                                    'format_id': format_id
+                                    'format_id': format_id,
+                                    'completed_at': time.time()
                                 }
                             else:
                                 download_progress[download_id] = {
@@ -480,12 +559,16 @@ def perform_download(download_id, url, format_type, format_id, output_format, co
 
 @app.route('/progress/<download_id>')
 def get_progress(download_id):
+    if not is_valid_download_id(download_id):
+        return jsonify({'status': 'error', 'error': 'Invalid download id'}), 400
     progress = download_progress.get(download_id, {'status': 'not_found'})
     return jsonify(progress)
 
 @app.route('/download_file/<download_id>')
 def download_file(download_id):
     try:
+        if not is_valid_download_id(download_id):
+            return jsonify({'error': 'Invalid download id'}), 400
         progress = download_progress.get(download_id)
         
         if not progress or progress['status'] != 'finished':
@@ -517,14 +600,40 @@ def download_file(download_id):
             try:
                 if temp_dir and os.path.exists(temp_dir):
                     shutil.rmtree(temp_dir)
-                # Remove from progress tracking
                 if download_id in download_progress:
-                    del download_progress[download_id]
-            except:
-                pass
+                    download_progress[download_id]['temp_dir'] = None
+            except Exception as cleanup_err:
+                print(f"Cleanup error for {download_id}: {cleanup_err}")
         
         return response
         
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/play_file/<download_id>')
+def play_file(download_id):
+    try:
+        if not is_valid_download_id(download_id):
+            return jsonify({'error': 'Invalid download id'}), 400
+        progress = download_progress.get(download_id)
+        
+        if not progress or progress.get('status') != 'finished':
+            return jsonify({'error': 'File not ready for playback'}), 404
+        
+        file_path = progress.get('file_path')
+        
+        if not file_path or not os.path.exists(file_path):
+            return jsonify({'error': 'File not found'}), 404
+        
+        mime_type = get_mime_type(file_path)
+        
+        return send_file(
+            file_path,
+            as_attachment=False,
+            download_name=progress.get('filename', os.path.basename(file_path)),
+            mimetype=mime_type,
+            conditional=True
+        )
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
@@ -537,7 +646,8 @@ def cleanup_old_files():
             current_time = time.time()
             to_remove = []
             
-            for download_id, progress in download_progress.items():
+            for download_id in list(download_progress.keys()):
+                progress = download_progress.get(download_id)
                 # Remove entries older than 24 hours
                 if progress.get('status') == 'finished':
                     file_path = progress.get('file_path')
@@ -545,6 +655,10 @@ def cleanup_old_files():
                         file_age = current_time - os.path.getctime(file_path)
                         if file_age > 86400:  # 24 hours
                             to_remove.append(download_id)
+                            try:
+                                os.remove(file_path)
+                            except Exception:
+                                pass
                             temp_dir = progress.get('temp_dir')
                             if temp_dir and os.path.exists(temp_dir):
                                 shutil.rmtree(temp_dir, ignore_errors=True)

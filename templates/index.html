@@ -110,6 +110,31 @@
         .new-download-btn:hover {
             background-color: #0056b3;
         }
+
+        .play-btn {
+            margin-top: 10px;
+            padding: 10px 20px;
+            background-color: #17a2b8;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 15px;
+        }
+
+        .play-btn:hover {
+            background-color: #138496;
+        }
+
+        .media-preview {
+            margin-top: 10px;
+        }
+
+        .media-preview video, .media-preview audio {
+            width: 100%;
+            border-radius: 8px;
+            margin-top: 10px;
+        }
     </style>
 </head>
 <body>
@@ -236,6 +261,7 @@
                     <div class="site-item">🎵 SoundCloud</div>
                     <div class="site-item">📱 TikTok</div>
                     <div class="site-item">🎬 Dailymotion</div>
+                    <div class="site-item">📦 TeraBox (requires cookies)</div>
                 </div>
             </div>
         </main>
@@ -246,6 +272,9 @@
         let fetchingInterval = null;
         let progressInterval = null;
         let availableFormats = null;
+        let lastDownloadType = 'video';
+        let inlinePlayerElement = null;
+        let inlinePlayerTag = null;
         
         // Function to fetch available formats from the URL
         async function fetchAvailableFormats() {
@@ -454,6 +483,9 @@
             
             // Clear available formats
             availableFormats = null;
+            lastDownloadType = 'video';
+            inlinePlayerElement = null;
+            inlinePlayerTag = null;
         }
 
         // Fake fetching progress for 5 seconds
@@ -500,14 +532,56 @@
         }
 
         // Show complete section
-        function showCompleteSection(downloadLink) {
+        function showCompleteSection(downloadId, filename) {
             document.getElementById('fetchingSection').classList.add('hidden');
             document.getElementById('progressSection').classList.add('hidden');
             document.getElementById('completeSection').classList.remove('hidden');
-            
-            // Set the download link
-            document.getElementById('downloadLink').innerHTML = 
-                `<p>Your download is ready: <a href="${downloadLink}" target="_blank">Click here to download</a></p>`;
+
+            const safeDownloadId = encodeURIComponent(downloadId);
+            const container = document.getElementById('downloadLink');
+            container.innerHTML = '';
+
+            const infoParagraph = document.createElement('p');
+            const link = document.createElement('a');
+            link.href = `/download_file/${safeDownloadId}`;
+            link.target = '_blank';
+            link.rel = 'noopener noreferrer';
+            link.textContent = `Download ${filename || 'file'}`;
+            infoParagraph.appendChild(document.createTextNode('Your download is ready: '));
+            infoParagraph.appendChild(link);
+            container.appendChild(infoParagraph);
+
+            const playButton = document.createElement('button');
+            playButton.className = 'play-btn';
+            playButton.textContent = 'Play now';
+            playButton.addEventListener('click', () => playInline(safeDownloadId));
+            container.appendChild(playButton);
+
+            const playerHolder = document.createElement('div');
+            playerHolder.id = 'inlinePlayer';
+            playerHolder.className = 'media-preview hidden';
+            container.appendChild(playerHolder);
+        }
+
+        function playInline(downloadId) {
+            const player = document.getElementById('inlinePlayer');
+            if (!player) return;
+            player.classList.remove('hidden');
+            const useAudio = lastDownloadType === 'audio';
+            const expectedTag = useAudio ? 'audio' : 'video';
+            if (!inlinePlayerElement || inlinePlayerTag !== expectedTag) {
+                player.innerHTML = '';
+                inlinePlayerElement = document.createElement(expectedTag);
+                inlinePlayerElement.controls = true;
+                if (!useAudio) {
+                    inlinePlayerElement.playsInline = true;
+                }
+                inlinePlayerElement.style.width = '100%';
+                player.appendChild(inlinePlayerElement);
+                inlinePlayerTag = expectedTag;
+            }
+            inlinePlayerElement.src = `/play_file/${downloadId}`;
+            inlinePlayerElement.load();
         }
 
         // Hide all progress indicators
@@ -536,7 +610,7 @@
                         progressText.textContent = '100%';
                         
                         // Show complete section with download link
-                        showCompleteSection(`/download_file/${downloadId}`);
+                        showCompleteSection(downloadId, data.filename);
                     } else if (data.status === 'downloading') {
                         // Extract percentage from string like "12.3%"
                         const percentMatch = data.percent.match(/(\d+\.?\d*)%/);
@@ -623,6 +697,8 @@
                 alert('Please fetch available formats first');
                 return;
             }
+
+            lastDownloadType = document.getElementById('formatType').value;
             
             // Hide the form and show loading state
             document.getElementById('downloadForm').classList.add('hidden');
