@@ -1,0 +1,63 @@
+from instagrapi import Client
+import os
+
+class InstagramVideoDownloader:
+    def __init__(self, username, password, session_file="instagram_session.json"):
+        self.username = username
+        self.password = password
+        self.session_file = session_file
+        self.client = self._setup_client()
+    
+    def _setup_client(self):
+        cl = Client()
+        
+        # Load session if exists
+        if os.path.exists(self.session_file):
+            try:
+                cl.load_settings(self.session_file)
+                cl.account_info()  # Test session
+                print("✓ Session loaded successfully")
+                return cl
+            except:
+                print("✗ Session expired, re-logging in...")
+        
+        # Login required
+        def challenge_handler(username, choice):
+            if choice and choice.name == "EMAIL":
+                return input(f"Enter email code for {username}: ")
+            return False
+        
+        cl.challenge_code_handler = challenge_handler
+        cl.login(self.username, self.password)
+        
+        # Save new session
+        cl.dump_settings(self.session_file)
+        print("✓ New session created and saved")
+        return cl
+    
+    def download_video(self, post_url, download_folder="downloads"):
+        try:
+            # Create download folder if not exists
+            os.makedirs(download_folder, exist_ok=True)
+            
+            # Get media info
+            media_pk = self.client.media_pk_from_url(post_url)
+            media_info = self.client.media_info(media_pk)
+            
+            if media_info.media_type == 2:  # Video type
+                print(f"Downloading video: {media_info.title}")
+                path = self.client.media_download(media_pk, folder=download_folder)
+                print(f"✓ Video downloaded: {path}")
+                return path
+            else:
+                print("✗ This post is not a video")
+                return None
+                
+        except Exception as e:
+            print(f"✗ Download failed: {e}")
+            return None
+
+# Usage
+if __name__ == "__main__":
+    downloader = InstagramVideoDownloader("dhibar.sanu123", "SANTANUINSTAGRAM2")
+    

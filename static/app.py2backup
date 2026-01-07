@@ -1,0 +1,568 @@
+from flask import Flask, render_template, request, jsonify, send_file
+import yt_dlp
+import os
+import tempfile
+import threading
+import uuid
+from datetime import datetime, timedelta
+from werkzeug.utils import secure_filename
+import glob
+import shutil
+import re
+import time
+import json
+
+app = Flask(__name__)
+
+# Store download progress and file information
+download_progress = {}
+
+# Configure cookies folder
+COOKIES_FOLDER = 'cookies'
+app.config['COOKIES_FOLDER'] = COOKIES_FOLDER
+
+# Create cookies directory
+os.makedirs(COOKIES_FOLDER, exist_ok=True)
+
+# Create downloads directory
+DOWNLOADS_DIR = 'downloads'
+os.makedirs(DOWNLOADS_DIR, exist_ok=True)
+
+def get_platform_from_url(url):
+    """Detect which platform the URL is from"""
+    if 'youtube.com' in url or 'youtu.be' in url:
+        return 'youtube'
+    elif 'facebook.com' in url:
+        return 'facebook'
+    elif 'instagram.com' in url:
+        return 'instagram'
+    elif 'tiktok.com' in url:
+        return 'tiktok'
+    elif 'twitter.com' in url or 'x.com' in url:
+        return 'twitter'
+    elif 'vimeo.com' in url:
+        return 'vimeo'
+    elif 'dailymotion.com' in url:
+        return 'dailymotion'
+    else:
+        return 'all'
+
+def get_cookie_file_for_url(url):
+    """Get the appropriate cookie file for the given URL"""
+    platform = get_platform_from_url(url)
+    
+    # Check if platform-specific cookie file exists
+    platform_cookie = os.path.join(COOKIES_FOLDER, f"{platform}.txt")
+    if os.path.exists(platform_cookie):
+        return f"{platform}.txt"
+    
+    # Fall back to all.txt if it exists
+    all_cookie = os.path.join(COOKIES_FOLDER, "all.txt")
+    if os.path.exists(all_cookie):
+        return "all.txt"
+    
+    # No cookie file available
+    return None
+
+class ProgressHook:
+    def __init__(self, download_id):
+        self.download_id = download_id
+    
+    def hook(self, d):
+        if d['status'] == 'downloading':
+            percent = d.get('_percent_str', '0%')
+            speed = d.get('_speed_str', 'N/A')
+            download_progress[self.download_id] = {
+                'status': 'downloading',
+                'percent': percent,
+                'speed': speed
+            }
+        elif d['status'] == 'finished':
+            download_progress[self.download_id] = {
+                'status': 'processing',
+                'message': 'Download completed, processing file...'
+            }
+        elif d['status'] == 'postprocessing':
+            download_progress[self.download_id] = {
+                'status': 'processing',
+                'message': 'Post-processing file...'
+            }
+
+def sanitize_filename(filename, max_length=100):
+    """Sanitize filename and limit its length more aggressively"""
+    if not filename:
+        return "video"
+    
+    # Remove invalid characters
+    filename = re.sub(r'[<>:"/\\|?*]', '', filename)
+    
+    # Remove emojis and special characters (keep basic alphanumeric, spaces, hyphens, underscores)
+    filename = re.sub(r'[^\w\s\-_\.]', '', filename)
+    
+    # Replace multiple spaces with single space
+    filename = re.sub(r'\s+', ' ', filename)
+    
+    # Trim leading/trailing spaces
+    filename = filename.strip()
+    
+    # Replace spaces with underscores
+    filename = filename.replace(' ', '_')
+    
+    # If filename is still too long, truncate it
+    if len(filename) > max_length:
+        # Keep extension if present
+        name, ext = os.path.splitext(filename)
+        # Truncate the name part
+        truncated_name = name[:max_length - len(ext)]
+        filename = truncated_name + ext
+    
+    return filename
+
+def get_safe_filename(title, format_type, format_ext, max_length=150):
+    """Generate a safe filename with proper extension"""
+    if not title:
+        title = "video"
+    
+    # Basic sanitization
+    safe_title = re.sub(r'[<>:"/\\|?*]', '', title)
+    safe_title = re.sub(r'[^\w\s\-_\.]', '', safe_title)
+    safe_title = safe_title.replace(' ', '_')[:100]
+    
+    if format_type == 'audio':
+        extension = format_ext
+    else:
+        extension = format_ext if format_ext else 'mp4'
+    
+    filename = f"{safe_title}.{extension}"
+    
+    # Final length check
+    if len(filename) > max_length:
+        name_part = safe_title[:max_length - len(extension) - 1]
+        filename = f"{name_part}.{extension}"
+    
+    return filename
+
+def get_youtube_format_string(quality, format_ext):
+    """Get the proper YouTube format string for the requested quality"""
+    # YouTube format IDs for different resolutions (ordered from highest to lowest quality)
+    format_map = {
+        '8k': {
+            'mp4': '701+251/702+251',
+            'webm': '701+251/702+251',
+            'mkv': '701+251/702+251',
+            'mpeg': '701+251/702+251',
+            'avi': '701+251/702+251',
+            'mov': '701+251/702+251'
+        },
+        '4k': {
+            'mp4': '401+251/313+251/400+251/271+251',
+            'webm': '313+251/271+251',
+            'mkv': '401+251/313+251/400+251/271+251',
+            'mpeg': '401+251/313+251/400+251/271+251',
+            'avi': '401+251/313+251/400+251/271+251',
+            'mov': '401+251/313+251/400+251/271+251'
+        },
+        '2k': {
+            'mp4': '400+251/271+251',
+            'webm': '271+251',
+            'mkv': '400+251/271+251',
+            'mpeg': '400+251/271+251',
+            'avi': '400+251/271+251',
+            'mov': '400+251/271+251'
+        },
+        '1080p': {
+            'mp4': '137+251/248+251/399+251',
+            'webm': '248+251',
+            'mkv': '137+251/248+251/399+251',
+            'mpeg': '137+251/248+251/399+251',
+            'avi': '137+251/248+251/399+251',
+            'mov': '137+251/248+251/399+251'
+        },
+        '720p': {
+            'mp4': '136+251/247+251/398+251',
+            'webm': '247+251',
+            'mkv': '136+251/247+251/398+251',
+            'mpeg': '136+251/247+251/398+251',
+            'avi': '136+251/247+251/398+251',
+            'mov': '136+251/247+251/398+251'
+        },
+        '480p': {
+            'mp4': '135+251/244+251/397+251',
+            'webm': '244+251',
+            'mkv': '135+251/244+251/397+251',
+            'mpeg': '135+251/244+251/397+251',
+            'avi': '135+251/244+251/397+251',
+            'mov': '135+251/244+251/397+251'
+        },
+        '360p': {
+            'mp4': '134+251/243+251/396+251',
+            'webm': '243+251',
+            'mkv': '134+251/243+251/396+251',
+            'mpeg': '134+251/243+251/396+251',
+            'avi': '134+251/243+251/396+251',
+            'mov': '134+251/243+251/396+251'
+        },
+        '240p': {
+            'mp4': '133+251/242+251/395+251',
+            'webm': '242+251',
+            'mkv': '133+251/242+251/395+251',
+            'mpeg': '133+251/242+251/395+251',
+            'avi': '133+251/242+251/395+251',
+            'mov': '133+251/242+251/395+251'
+        },
+        '144p': {
+            'mp4': '160+251/278+251/394+251',
+            'webm': '278+251',
+            'mkv': '160+251/278+251/394+251',
+            'mpeg': '160+251/278+251/394+251',
+            'avi': '160+251/278+251/394+251',
+            'mov': '160+251/278+251/394+251'
+        }
+    }
+    
+    # Get the format string for the requested quality and format
+    if quality in format_map and format_ext in format_map[quality]:
+        return format_map[quality][format_ext]
+    
+    # Fallback to best available
+    return 'bestvideo+bestaudio/best'
+
+def get_general_format_string(quality, format_ext):
+    """Get format string for non-YouTube platforms"""
+    quality_map = {
+        '8k': 'best[height>=4320]',
+        '4k': 'best[height>=2160]',
+        '2k': 'best[height>=1440]',
+        '1080p': 'best[height>=1080]',
+        '720p': 'best[height>=720]',
+        '480p': 'best[height>=480]',
+        '360p': 'best[height>=360]',
+        '240p': 'best[height>=240]',
+        '144p': 'best[height>=144]'
+    }
+    
+    base_format = quality_map.get(quality, 'best')
+    
+    format_ext_map = {
+        'mp4': f'{base_format}[ext=mp4]/best[ext=mp4]',
+        'webm': f'{base_format}[ext=webm]/best[ext=webm]',
+        'mkv': f'{base_format}/best',
+        'mpeg': f'{base_format}/best',
+        'avi': f'{base_format}/best',
+        'mov': f'{base_format}/best'
+    }
+    
+    return format_ext_map.get(format_ext, base_format)
+
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+@app.route('/download', methods=['POST'])
+def download_video():
+    try:
+        data = request.json
+        url = data.get('url')
+        format_type = data.get('format_type')  # 'video' or 'audio'
+        quality = data.get('quality')
+        format_ext = data.get('format')
+        audio_quality = data.get('audio_quality', '192')
+        
+        if not url:
+            return jsonify({'error': 'URL is required'}), 400
+        
+        # Get appropriate cookie file for this URL
+        cookies_file = get_cookie_file_for_url(url)
+        print(f"Using cookie file: {cookies_file} for URL: {url}")
+        
+        download_id = str(uuid.uuid4())
+        
+        # Start download in background
+        thread = threading.Thread(
+            target=perform_download,
+            args=(download_id, url, format_type, quality, format_ext, cookies_file, audio_quality)
+        )
+        thread.start()
+        
+        return jsonify({
+            'download_id': download_id,
+            'message': 'Download started'
+        })
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+def perform_download(download_id, url, format_type, quality, format_ext, cookies_file, audio_quality):
+    # Use a shorter temp directory
+    temp_dir = tempfile.mkdtemp(dir='/tmp')
+    try:
+        # Use simple filename pattern for download to avoid long paths
+        simple_pattern = os.path.join(temp_dir, f'dl_{download_id[:8]}.%(ext)s')
+        
+        # Configure yt-dlp options
+        ydl_opts = {
+            'outtmpl': simple_pattern,
+            'progress_hooks': [ProgressHook(download_id).hook],
+            'extract_flat': False,
+            'writethumbnail': False,
+            'writeinfojson': False,
+            'ignoreerrors': False,
+            'no_warnings': False,
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            },
+            'extractor_retries': 3,
+            'retries': 3,
+        }
+        
+        # Add cookies if available
+        if cookies_file:
+            cookies_path = os.path.join(app.config['COOKIES_FOLDER'], cookies_file)
+            if os.path.exists(cookies_path):
+                ydl_opts['cookiefile'] = cookies_path
+                print(f"Using cookies from: {cookies_path}")
+        
+        # Configure format based on user selection
+        if format_type == 'audio':
+            # Audio format mapping
+            audio_format_map = {
+                'mp3': {'codec': 'mp3', 'quality': audio_quality},
+                'flac': {'codec': 'flac', 'quality': None},
+                'm4a': {'codec': 'm4a', 'quality': audio_quality},
+                'wav': {'codec': 'wav', 'quality': None},
+                'ogg': {'codec': 'vorbis', 'quality': audio_quality},
+                'aac': {'codec': 'aac', 'quality': audio_quality},
+                'wma': {'codec': 'wma', 'quality': audio_quality},
+                'opus': {'codec': 'opus', 'quality': audio_quality}
+            }
+            
+            if format_ext in audio_format_map:
+                audio_config = audio_format_map[format_ext]
+                ydl_opts['format'] = 'bestaudio/best'
+                
+                postprocessors = []
+                if audio_config['codec']:
+                    postprocessors.append({
+                        'key': 'FFmpegExtractAudio',
+                        'preferredcodec': audio_config['codec'],
+                        'preferredquality': audio_config['quality'],
+                    })
+                
+                postprocessors.append({'key': 'FFmpegMetadata'})
+                ydl_opts['postprocessors'] = postprocessors
+                ydl_opts['prefer_ffmpeg'] = True
+            else:
+                ydl_opts['format'] = 'bestaudio/best'
+            
+        else:  # video
+            # Use platform-specific format selection
+            if 'youtube.com' in url or 'youtu.be' in url:
+                # YouTube-specific format selection
+                ydl_opts['format'] = get_youtube_format_string(quality, format_ext)
+                print(f"YouTube format selected: {ydl_opts['format']}")
+            else:
+                # For other platforms
+                ydl_opts['format'] = get_general_format_string(quality, format_ext)
+                print(f"General format selected: {ydl_opts['format']}")
+                
+                # Add postprocessors for format conversion if needed
+                format_conversion_map = {
+                    'mkv': 'mkv',
+                    'mpeg': 'mpeg',
+                    'avi': 'avi',
+                    'mov': 'mov'
+                }
+                
+                if format_ext in format_conversion_map:
+                    ydl_opts['postprocessors'] = [{
+                        'key': 'FFmpegVideoConvertor',
+                        'preferedformat': format_conversion_map[format_ext],
+                    }]
+        
+        # Download the video
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            try:
+                # First, try to extract info to validate the URL and check available formats
+                info = ydl.extract_info(url, download=False)
+                if not info:
+                    download_progress[download_id] = {
+                        'status': 'error',
+                        'error': 'Could not extract video information'
+                    }
+                    return
+                
+                # Debug: Print available formats to understand what's available
+                print(f"Available formats for {url}:")
+                if 'formats' in info:
+                    for fmt in info['formats']:
+                        if fmt.get('height'):
+                            print(f"  - {fmt.get('format_id')}: {fmt.get('height')}p, {fmt.get('ext')}, {fmt.get('vcodec')}")
+                
+                # Get the title for filename
+                title = info.get('title', 'video')
+                safe_filename = get_safe_filename(title, format_type, format_ext)
+                
+                # Now perform the actual download
+                result = ydl.extract_info(url, download=True)
+                
+                if result:
+                    # Wait a moment for post-processing to complete
+                    time.sleep(2)
+                    
+                    # Find the downloaded file
+                    files = os.listdir(temp_dir)
+                    if files:
+                        downloaded_file = files[0]  # Should be our simple-named file
+                        original_file_path = os.path.join(temp_dir, downloaded_file)
+                        final_file_path = os.path.join(temp_dir, safe_filename)
+                        
+                        # Rename to the proper filename
+                        if os.path.exists(original_file_path):
+                            os.rename(original_file_path, final_file_path)
+                            
+                            # Verify the file exists and is accessible
+                            if os.path.exists(final_file_path) and os.path.getsize(final_file_path) > 0:
+                                download_progress[download_id] = {
+                                    'status': 'finished',
+                                    'filename': safe_filename,
+                                    'file_path': final_file_path,
+                                    'temp_dir': temp_dir,
+                                    'requested_resolution': quality
+                                }
+                            else:
+                                download_progress[download_id] = {
+                                    'status': 'error',
+                                    'error': 'File was created but is empty or inaccessible'
+                                }
+                        else:
+                            download_progress[download_id] = {
+                                'status': 'error',
+                                'error': 'Download completed but file not found'
+                            }
+                    else:
+                        download_progress[download_id] = {
+                            'status': 'error',
+                            'error': 'Download completed but no files found'
+                        }
+                
+            except yt_dlp.utils.ExtractorError as e:
+                error_msg = str(e)
+                if "Private video" in error_msg:
+                    error_msg = "This video is private. Try using a cookies file to access it."
+                elif "Video unavailable" in error_msg:
+                    error_msg = "This video is unavailable or has been removed."
+                elif "Sign in to confirm your age" in error_msg:
+                    error_msg = "Age-restricted content. Please use a cookies file from a logged-in session."
+                elif "format is not available" in error_msg.lower():
+                    error_msg = f"Requested format ({quality}) is not available for this video. Try a lower quality."
+                download_progress[download_id] = {
+                    'status': 'error',
+                    'error': f'Extraction failed: {error_msg}'
+                }
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                
+            except Exception as e:
+                download_progress[download_id] = {
+                    'status': 'error',
+                    'error': f'Unexpected error: {str(e)}'
+                }
+                shutil.rmtree(temp_dir, ignore_errors=True)
+            
+    except Exception as e:
+        download_progress[download_id] = {
+            'status': 'error',
+            'error': str(e)
+        }
+        if 'temp_dir' in locals() and os.path.exists(temp_dir):
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+@app.route('/progress/<download_id>')
+def get_progress(download_id):
+    progress = download_progress.get(download_id, {'status': 'not_found'})
+    return jsonify(progress)
+
+@app.route('/download_file/<download_id>')
+def download_file(download_id):
+    try:
+        progress = download_progress.get(download_id)
+        
+        if not progress or progress['status'] != 'finished':
+            return jsonify({'error': 'File not ready for download'}), 404
+        
+        file_path = progress.get('file_path')
+        temp_dir = progress.get('temp_dir')
+        
+        if not file_path or not os.path.exists(file_path):
+            return jsonify({'error': 'File not found'}), 404
+        
+        # Verify file is not empty
+        if os.path.getsize(file_path) == 0:
+            return jsonify({'error': 'File is empty'}), 404
+        
+        # Get filename for download
+        filename = progress.get('filename', 'download')
+        
+        # Create response
+        response = send_file(
+            file_path, 
+            as_attachment=True,
+            download_name=filename
+        )
+        
+        # Clean up the temporary directory after sending the file
+        @response.call_on_close
+        def cleanup():
+            try:
+                if temp_dir and os.path.exists(temp_dir):
+                    shutil.rmtree(temp_dir)
+                # Remove from progress tracking
+                if download_id in download_progress:
+                    del download_progress[download_id]
+            except:
+                pass
+        
+        return response
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+# Cleanup function to remove old temporary files
+def cleanup_old_files():
+    """Clean up old files from progress tracking"""
+    while True:
+        time.sleep(3600)  # Run every hour
+        try:
+            current_time = time.time()
+            to_remove = []
+            
+            for download_id, progress in download_progress.items():
+                # Remove entries older than 24 hours
+                if progress.get('status') == 'finished':
+                    file_path = progress.get('file_path')
+                    if file_path and os.path.exists(file_path):
+                        file_age = current_time - os.path.getctime(file_path)
+                        if file_age > 86400:  # 24 hours
+                            to_remove.append(download_id)
+                            temp_dir = progress.get('temp_dir')
+                            if temp_dir and os.path.exists(temp_dir):
+                                shutil.rmtree(temp_dir, ignore_errors=True)
+            
+            for download_id in to_remove:
+                if download_id in download_progress:
+                    del download_progress[download_id]
+                    
+        except Exception as e:
+            print(f"Cleanup error: {e}")
+
+# Start cleanup thread
+cleanup_thread = threading.Thread(target=cleanup_old_files, daemon=True)
+cleanup_thread.start()
+
+if __name__ == '__main__':
+    # Print available cookie files
+    print("Available cookie files:")
+    for file_path in glob.glob(os.path.join(COOKIES_FOLDER, '*.txt')):
+        filename = os.path.basename(file_path)
+        print(f"  - {filename}")
+    
+    app.run(debug=True, host='0.0.0.0', port=5000)
