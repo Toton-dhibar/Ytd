@@ -52,13 +52,6 @@ ALLOWED_MIME_TYPES = {
     'wma': 'audio/x-ms-wma'
 }
 
-TERABOX_APP_ID = '250528'
-TERABOX_SHARE_API = 'https://www.terabox.com/share/list'
-
-def extract_domain_and_surl(url):
-    parsed = urlparse(url)
-    return parsed.netloc, parse_qs(parsed.query).get('surl', [''])[0]
-
 def parse_cookie_file(cookiefile):
     cookies = {}
     if not cookiefile or not os.path.exists(cookiefile):

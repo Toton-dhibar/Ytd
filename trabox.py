@@ -125,5 +125,5 @@ def download(url: str, cookiefile: str = None):
 
 if __name__ == "__main__":
     # Example usage when running the script directly
-    dlink = download('https://teraboxapp.com/s/1ZqumlUbwrc32c40geaQsVg')
+    dlink = download('https://teraboxapp.com/s/example_link')
     print(dlink)
