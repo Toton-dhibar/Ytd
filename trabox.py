@@ -43,7 +43,7 @@ def parseCookieFile(cookiefile):
                         cookie_name = line_fields[5]
                         cookie_value = line_fields[6]
                         cookies[cookie_name] = cookie_value
-    except OSError:
+    except Exception:
         return {}
     return cookies
 
@@ -78,12 +78,15 @@ def get_file_info(url: str, cookiefile: str = None):
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/93.0.4577.82 Safari/537.36'
     }
 
-    response = axios.get(
-        f'https://www.terabox.com/share/list?app_id=250528&shorturl={key}&root=1', headers=headers)
+    try:
+        response = axios.get(
+            f'https://www.terabox.com/share/list?app_id=250528&shorturl={key}&root=1', headers=headers)
+    except requests.RequestException:
+        return None
 
     try:
         data = response.json()
-    except Exception:
+    except ValueError:
         return None
 
     files = data.get('list') or []

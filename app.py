@@ -208,10 +208,18 @@ def build_video_format_string(format_id, output_format):
         return format_id
     if output_format == 'mp4':
         # Prefer MP4-friendly video/audio combos to avoid incompatible merges (e.g., webm audio)
-        preferred_video = f"{format_id}[ext=mp4][vcodec^=avc1]/bestvideo[ext=mp4][vcodec^=avc1]/bestvideo[vcodec^=avc1]"
-        preferred_audio = "bestaudio[ext=m4a]/bestaudio[acodec^=mp4a]/bestaudio[acodec^=aac]"
+        preferred_videos = [
+            f"{format_id}[ext=mp4][vcodec^=avc1]",
+            "bestvideo[ext=mp4][vcodec^=avc1]",
+            "bestvideo[vcodec^=avc1]"
+        ]
+        preferred_audios = [
+            "bestaudio[ext=m4a]",
+            "bestaudio[acodec^=mp4a]",
+            "bestaudio[acodec^=aac]"
+        ]
         fallback_combo = "bestvideo[ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/best[ext=mp4]/best"
-        preferred_combo = f"{preferred_video}+{preferred_audio}"
+        preferred_combo = "/".join(preferred_videos) + "+" + "/".join(preferred_audios)
         return f"{preferred_combo}/{fallback_combo}"
     fallback_combo = f"bestvideo[ext={output_format}]+bestaudio/bestvideo+bestaudio"
     return f'{format_id}+bestaudio/{fallback_combo}'
@@ -549,6 +557,7 @@ def perform_download(download_id, url, format_type, format_id, output_format, co
         else:  # video
             # For video downloads, ensure we get both video and audio
             ydl_opts['format'] = build_video_format_string(format_id, output_format)
+            # Facebook/Instagram deliver AVC/AAC MP4 streams; mark as copy-safe when the format string enforces MP4
             mp4_copy_safe = platform in ('facebook', 'instagram') and output_format == 'mp4' and 'ext=mp4' in ydl_opts['format']
             
             # Set up video post-processing for format conversion
@@ -570,7 +579,7 @@ def perform_download(download_id, url, format_type, format_id, output_format, co
                 ydl_opts['postprocessors'] = postprocessors
                 ffmpeg_args = list(FASTSTART_ARGS)
                 if output_format == 'mp4':
-                    # Facebook/Instagram already provide H.264/AAC streams, avoid unnecessary re-encode
+                    # Copy when streams are MP4/AVC/AAC to keep Facebook/Instagram downloads fast; otherwise fall back to safe re-encode
                     if mp4_copy_safe:
                         ffmpeg_args.extend(['-c:v', 'copy', '-c:a', 'copy'])
                     else:
