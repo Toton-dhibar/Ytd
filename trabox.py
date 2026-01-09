@@ -1,6 +1,6 @@
 import os
 import json
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, urlunparse
 import requests
 
 
@@ -68,7 +68,22 @@ def get_file_info(url: str, cookiefile: str = None):
     if cookies:
         axios.cookies.update(cookies)
 
-    response = axios.get(url, allow_redirects=True)
+    parsed = urlparse(url)
+    host = (parsed.hostname or '').lower()
+    allowed_hosts = ('terabox.com', 'teraboxapp.com', 'nephobox.com')
+    if not host or not any(host == h or host.endswith(f".{h}") for h in allowed_hosts):
+        return None
+
+    safe_url = urlunparse((
+        parsed.scheme or 'https',
+        host,
+        parsed.path or '/',
+        '',
+        parsed.query,
+        ''
+    ))
+
+    response = axios.get(safe_url, allow_redirects=True)
     domain, key = extract_domain_and_surl(response.url)
 
     headers = {
