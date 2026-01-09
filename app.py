@@ -534,7 +534,6 @@ def perform_download(download_id, url, format_type, format_id, output_format, co
         if platform == 'terabox':
             ydl_opts['http_headers']['Referer'] = url
         
-        mp4_copy_safe = False
         # Set the format based on user selection
         if format_type == 'audio':
             if format_id == 'bestaudio':
@@ -557,8 +556,6 @@ def perform_download(download_id, url, format_type, format_id, output_format, co
         else:  # video
             # For video downloads, ensure we get both video and audio
             ydl_opts['format'] = build_video_format_string(format_id, output_format)
-            # Facebook/Instagram deliver AVC/AAC MP4 streams; mark as copy-safe when the format string enforces MP4
-            mp4_copy_safe = platform in ('facebook', 'instagram') and output_format == 'mp4' and 'ext=mp4' in ydl_opts['format']
             
             # Set up video post-processing for format conversion
             postprocessors = []
@@ -579,11 +576,7 @@ def perform_download(download_id, url, format_type, format_id, output_format, co
                 ydl_opts['postprocessors'] = postprocessors
                 ffmpeg_args = list(FASTSTART_ARGS)
                 if output_format == 'mp4':
-                    # Copy when streams are MP4/AVC/AAC to keep Facebook/Instagram downloads fast; otherwise fall back to safe re-encode
-                    if mp4_copy_safe:
-                        ffmpeg_args.extend(['-c:v', 'copy', '-c:a', 'copy'])
-                    else:
-                        ffmpeg_args.extend(MP4_SAFE_ARGS)
+                    ffmpeg_args.extend(MP4_SAFE_ARGS)
                 ydl_opts['postprocessor_args'] = {'FFmpegVideoConvertor': ffmpeg_args}
         
         # Download the video
@@ -597,6 +590,23 @@ def perform_download(download_id, url, format_type, format_id, output_format, co
                         'error': 'Could not extract video information'
                     }
                     return
+                
+                def is_mp4_copy_safe(info_data):
+                    formats = info_data.get('formats') or []
+                    video_fmt = next((f for f in formats if f.get('format_id') == format_id), {})
+                    video_codec = (video_fmt.get('vcodec') or '').lower()
+                    audio_codec = (video_fmt.get('acodec') or '').lower()
+                    avc_ok = video_codec and video_codec != 'none' and (video_codec.startswith('avc') or video_codec.startswith('h264'))
+                    aac_in_video = audio_codec and audio_codec != 'none' and (audio_codec.startswith('mp4a') or audio_codec.startswith('aac'))
+                    has_m4a_audio = any(
+                        (fmt.get('acodec') or '').lower().startswith(('mp4a', 'aac')) and fmt.get('vcodec') == 'none'
+                        for fmt in formats
+                    )
+                    return avc_ok and (aac_in_video or has_m4a_audio)
+
+                if output_format == 'mp4' and platform in ('facebook', 'instagram') and is_mp4_copy_safe(info):
+                    ydl.params.setdefault('postprocessor_args', {})
+                    ydl.params['postprocessor_args']['FFmpegVideoConvertor'] = list(FASTSTART_ARGS) + ['-c:v', 'copy', '-c:a', 'copy']
                 
                 # Get the title for filename
                 title = info.get('title', 'video')

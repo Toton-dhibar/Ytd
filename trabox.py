@@ -44,7 +44,7 @@ def parseCookieFile(cookiefile):
                         cookie_name = line_fields[5]
                         cookie_value = line_fields[6]
                         cookies[cookie_name] = cookie_value
-    except Exception:
+    except (OSError, IOError, PermissionError):
         return {}
     return cookies
 
