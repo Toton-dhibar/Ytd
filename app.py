@@ -211,7 +211,8 @@ def build_video_format_string(format_id, output_format):
         preferred_video = f"{format_id}[ext=mp4][vcodec^=avc1]/bestvideo[ext=mp4][vcodec^=avc1]/bestvideo[vcodec^=avc1]"
         preferred_audio = "bestaudio[ext=m4a]/bestaudio[acodec^=mp4a]/bestaudio[acodec^=aac]"
         fallback_combo = "bestvideo[ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/best[ext=mp4]/best"
-        return f"{preferred_video}+{preferred_audio}/{fallback_combo}"
+        preferred_combo = f"{preferred_video}+{preferred_audio}"
+        return f"{preferred_combo}/{fallback_combo}"
     fallback_combo = f"bestvideo[ext={output_format}]+bestaudio/bestvideo+bestaudio"
     return f'{format_id}+bestaudio/{fallback_combo}'
 
@@ -525,6 +526,7 @@ def perform_download(download_id, url, format_type, format_id, output_format, co
         if platform == 'terabox':
             ydl_opts['http_headers']['Referer'] = url
         
+        mp4_copy_safe = False
         # Set the format based on user selection
         if format_type == 'audio':
             if format_id == 'bestaudio':
@@ -547,6 +549,7 @@ def perform_download(download_id, url, format_type, format_id, output_format, co
         else:  # video
             # For video downloads, ensure we get both video and audio
             ydl_opts['format'] = build_video_format_string(format_id, output_format)
+            mp4_copy_safe = platform in ('facebook', 'instagram') and output_format == 'mp4' and 'ext=mp4' in ydl_opts['format']
             
             # Set up video post-processing for format conversion
             postprocessors = []
@@ -568,7 +571,7 @@ def perform_download(download_id, url, format_type, format_id, output_format, co
                 ffmpeg_args = list(FASTSTART_ARGS)
                 if output_format == 'mp4':
                     # Facebook/Instagram already provide H.264/AAC streams, avoid unnecessary re-encode
-                    if platform in ('facebook', 'instagram'):
+                    if mp4_copy_safe:
                         ffmpeg_args.extend(['-c:v', 'copy', '-c:a', 'copy'])
                     else:
                         ffmpeg_args.extend(MP4_SAFE_ARGS)

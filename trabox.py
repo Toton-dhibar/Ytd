@@ -32,16 +32,19 @@ def parseCookieFile(cookiefile):
     if not cookiefile or not os.path.exists(cookiefile):
         return cookies
 
-    with open(cookiefile, 'r') as fp:
-        for line in fp:
-            if not line.startswith('#'):
-                line_fields = line.strip().split('\t')
-                # Make sure the line has at least 7 fields, as per Netscape format
-                if len(line_fields) >= 7:
-                    # Extract the cookie name and value
-                    cookie_name = line_fields[5]
-                    cookie_value = line_fields[6]
-                    cookies[cookie_name] = cookie_value
+    try:
+        with open(cookiefile, 'r') as fp:
+            for line in fp:
+                if not line.startswith('#'):
+                    line_fields = line.strip().split('\t')
+                    # Make sure the line has at least 7 fields, as per Netscape format
+                    if len(line_fields) >= 7:
+                        # Extract the cookie name and value
+                        cookie_name = line_fields[5]
+                        cookie_value = line_fields[6]
+                        cookies[cookie_name] = cookie_value
+    except OSError:
+        return {}
     return cookies
 
 
