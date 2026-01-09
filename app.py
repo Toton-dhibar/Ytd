@@ -207,6 +207,7 @@ def build_video_format_string(format_id, output_format):
     if format_id in ['best', 'worst']:
         return format_id
     if output_format == 'mp4':
+        # Prefer MP4-friendly video/audio combos to avoid incompatible merges (e.g., webm audio)
         preferred_video = f"{format_id}[ext=mp4][vcodec^=avc1]/bestvideo[ext=mp4][vcodec^=avc1]/bestvideo[vcodec^=avc1]"
         preferred_audio = "bestaudio[ext=m4a]/bestaudio[acodec^=mp4a]/bestaudio[acodec^=aac]"
         fallback_combo = "bestvideo[ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/best[ext=mp4]/best"
@@ -566,6 +567,7 @@ def perform_download(download_id, url, format_type, format_id, output_format, co
                 ydl_opts['postprocessors'] = postprocessors
                 ffmpeg_args = list(FASTSTART_ARGS)
                 if output_format == 'mp4':
+                    # Facebook/Instagram already provide H.264/AAC streams, avoid unnecessary re-encode
                     if platform in ('facebook', 'instagram'):
                         ffmpeg_args.extend(['-c:v', 'copy', '-c:a', 'copy'])
                     else:

@@ -79,11 +79,16 @@ def get_file_info(url: str, cookiefile: str = None):
         f'https://www.terabox.com/share/list?app_id=250528&shorturl={key}&root=1', headers=headers)
 
     try:
-        file_data = response.json().get('list', [])[0]
+        data = response.json()
     except Exception:
         return None
 
-    if not file_data or 'dlink' not in file_data:
+    files = data.get('list') or []
+    if not files:
+        return None
+
+    file_data = files[0]
+    if 'dlink' not in file_data:
         return None
 
     return {
