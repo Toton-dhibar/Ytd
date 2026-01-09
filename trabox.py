@@ -1,4 +1,5 @@
 import os
+import json
 from urllib.parse import urlparse, parse_qs
 import requests
 
@@ -86,7 +87,7 @@ def get_file_info(url: str, cookiefile: str = None):
 
     try:
         data = response.json()
-    except ValueError:
+    except (ValueError, json.JSONDecodeError):
         return None
 
     files = data.get('list') or []

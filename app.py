@@ -211,7 +211,12 @@ def build_video_format_string(format_id, output_format):
             "bestaudio[acodec^=mp4a]",
             "bestaudio[acodec^=aac]"
         ]
-        fallback_combo = "bestvideo[ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/best[ext=mp4]/best"
+        fallback_parts = [
+            "bestvideo[ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]",
+            "best[ext=mp4]",
+            "best"
+        ]
+        fallback_combo = "/".join(fallback_parts)
         preferred_combo = "/".join(preferred_videos) + "+" + "/".join(preferred_audios)
         return f"{preferred_combo}/{fallback_combo}"
     fallback_combo = f"bestvideo[ext={output_format}]+bestaudio/bestvideo+bestaudio"
