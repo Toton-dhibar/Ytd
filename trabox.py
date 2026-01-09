@@ -126,5 +126,5 @@ def download(url: str, cookiefile: str = None):
 
 if __name__ == "__main__":
     # Example usage when running the script directly
-    dlink = download('https://teraboxapp.com/s/example_link')
-    print(dlink)
+    example_url = 'https://teraboxapp.com/s/<share_id>'
+    print(f"Run download({example_url!r}) with a real share link to fetch a direct URL.")

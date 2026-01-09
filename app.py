@@ -217,7 +217,9 @@ def build_video_format_string(format_id, output_format):
             "best"
         ]
         fallback_combo = "/".join(fallback_parts)
-        preferred_combo = "/".join(preferred_videos) + "+" + "/".join(preferred_audios)
+        preferred_video_combo = "/".join(preferred_videos)
+        preferred_audio_combo = "/".join(preferred_audios)
+        preferred_combo = f"{preferred_video_combo}+{preferred_audio_combo}"
         return f"{preferred_combo}/{fallback_combo}"
     fallback_combo = f"bestvideo[ext={output_format}]+bestaudio/bestvideo+bestaudio"
     return f'{format_id}+bestaudio/{fallback_combo}'
