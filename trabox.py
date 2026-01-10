@@ -1,6 +1,7 @@
-from urllib.parse import urlparse, parse_qs
+import os
+import json
+from urllib.parse import urlparse, parse_qs, urlunparse
 import requests
-import re
 
 
 def extract_domain_and_surl(url):
@@ -29,37 +30,60 @@ def parseCookieFile(cookiefile):
     """
 
     cookies = {}
-    with open(cookiefile, 'r') as fp:
-        for line in fp:
-            if not line.startswith('#'):
-                line_fields = line.strip().split('\t')
-                # Make sure the line has at least 7 fields, as per Netscape format
-                if len(line_fields) >= 7:
-                    # Extract the cookie name and value
-                    cookie_name = line_fields[5]
-                    cookie_value = line_fields[6]
-                    cookies[cookie_name] = cookie_value
+    if not cookiefile or not os.path.exists(cookiefile):
+        return cookies
+
+    try:
+        with open(cookiefile, 'r') as fp:
+            for line in fp:
+                if not line.startswith('#'):
+                    line_fields = line.strip().split('\t')
+                    # Make sure the line has at least 7 fields, as per Netscape format
+                    if len(line_fields) >= 7:
+                        # Extract the cookie name and value
+                        cookie_name = line_fields[5]
+                        cookie_value = line_fields[6]
+                        cookies[cookie_name] = cookie_value
+    except (OSError, IOError, PermissionError):
+        return {}
     return cookies
 
 
-def download(url: str) -> str:
+def get_file_info(url: str, cookiefile: str = None):
     """
-    Downloads data from a given URL and returns the result.
+    Downloads metadata from a given URL and returns the file details including direct link.
 
     Args:
-        url (str): The URL to download data from.
+        url (str): The TeraBox share URL.
+        cookiefile (str): Path to the cookies file.
 
     Returns:
-        str: The downloaded data.
+        dict | None: A dictionary containing download information or None if unavailable.
     """
 
     axios = requests.Session()
 
-    # Load cookies from 'cookies.txt'
-    cookies = parseCookieFile('cookies.txt')
-    axios.cookies.update(cookies)
+    # Load cookies from provided file if available
+    cookies = parseCookieFile(cookiefile or 'cookies.txt')
+    if cookies:
+        axios.cookies.update(cookies)
 
-    response = axios.get(url)
+    parsed = urlparse(url)
+    host = (parsed.hostname or '').lower()
+    allowed_hosts = ('terabox.com', 'teraboxapp.com', 'nephobox.com')
+    if not host or not any(host == h or host.endswith(f".{h}") for h in allowed_hosts):
+        return None
+
+    safe_url = urlunparse((
+        parsed.scheme or 'https',
+        host,
+        parsed.path or '/',
+        '',
+        parsed.query,
+        ''
+    ))
+
+    response = axios.get(safe_url, allow_redirects=True)
     domain, key = extract_domain_and_surl(response.url)
 
     headers = {
@@ -70,17 +94,52 @@ def download(url: str) -> str:
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/93.0.4577.82 Safari/537.36'
     }
 
-    response = axios.get(
-        f'https://www.terabox.com/share/list?app_id=250528&shorturl={key}&root=1', headers=headers)
+    try:
+        response = axios.get(
+            f'https://www.terabox.com/share/list?app_id=250528&shorturl={key}&root=1', headers=headers)
+    except requests.RequestException:
+        return None
 
     try:
-        result = response.json()['list'][0]['dlink']
-    except KeyError:
-        print("Failed to get download link")
-    else:
-        return result
+        data = response.json()
+    except (ValueError, json.JSONDecodeError):
+        return None
+
+    files = data.get('list') or []
+    if not files:
+        return None
+
+    file_data = files[0]
+    if 'dlink' not in file_data:
+        return None
+
+    return {
+        'direct_link': file_data.get('dlink'),
+        'filename': file_data.get('server_filename'),
+        'size': file_data.get('size'),
+        'headers': headers,
+        'cookies': cookies
+    }
 
 
-# Example usage
-dlink = download('https://teraboxapp.com/s/1ZqumlUbwrc32c40geaQsVg')
-print(dlink)
+def download(url: str, cookiefile: str = None):
+    """
+    Wrapper to fetch only the direct download link from a TeraBox URL.
+
+    Args:
+        url (str): The TeraBox share URL.
+        cookiefile (str): Path to the cookies file.
+
+    Returns:
+        str | None: The direct download link if available.
+    """
+    info = get_file_info(url, cookiefile=cookiefile)
+    if not info:
+        return None
+    return info.get('direct_link')
+
+
+if __name__ == "__main__":
+    # Example usage when running the script directly
+    example_url = 'https://teraboxapp.com/s/<share_id>'
+    print(f"Run download({example_url!r}) with a real share link to fetch a direct URL.")

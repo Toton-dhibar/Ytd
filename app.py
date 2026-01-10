@@ -14,6 +14,7 @@ import json
 import mimetypes
 from urllib.parse import urlparse, parse_qs, urlunparse
 import requests
+import trabox
 
 app = Flask(__name__)
 
@@ -51,13 +52,6 @@ ALLOWED_MIME_TYPES = {
     'wma': 'audio/x-ms-wma'
 }
 
-TERABOX_APP_ID = '250528'
-TERABOX_SHARE_API = 'https://www.terabox.com/share/list'
-
-def extract_domain_and_surl(url):
-    parsed = urlparse(url)
-    return parsed.netloc, parse_qs(parsed.query).get('surl', [''])[0]
-
 def parse_cookie_file(cookiefile):
     cookies = {}
     if not cookiefile or not os.path.exists(cookiefile):
@@ -72,54 +66,12 @@ def parse_cookie_file(cookiefile):
     return cookies
 
 def get_terabox_file_info(url, cookiefile):
-    session = requests.Session()
-    cookies = parse_cookie_file(cookiefile)
-    if cookies:
-        session.cookies.update(cookies)
-    parsed = urlparse(url)
-    host = (parsed.hostname or '').lower()
-    allowed_hosts = ('terabox.com', 'teraboxapp.com', 'nephobox.com')
-    if not host or not any(host == h or host.endswith(f".{h}") for h in allowed_hosts):
+    info = trabox.get_file_info(url, cookiefile=cookiefile)
+    if not info:
         return None
-    safe_url = urlunparse((
-        parsed.scheme or 'https',
-        host,
-        parsed.path or '/',
-        '',
-        parsed.query,
-        ''
-    ))
-    response = session.get(safe_url, allow_redirects=True)
-    domain, key = extract_domain_and_surl(response.url)
-    if not key:
-        return None
-    headers = {
-        'Accept': 'application/json, text/plain, */*',
-        'Accept-Language': 'en-US,en;q=0.5',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'Referer': f'https://{domain}/sharing/link?surl={key}',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/93.0.4577.82 Safari/537.36'
-    }
-    api_url = f'{TERABOX_SHARE_API}?app_id={TERABOX_APP_ID}&shorturl={key}&root=1'
-    response = session.get(api_url, headers=headers)
-    try:
-        data = response.json()
-    except ValueError:
-        return None
-    files = data.get('list') or []
-    if not files:
-        return None
-    first = files[0]
-    direct_link = first.get('dlink')
-    if not direct_link:
-        return None
-    return {
-        'direct_link': direct_link,
-        'filename': first.get('server_filename') or f'terabox_{key}',
-        'size': first.get('size'),
-        'headers': headers,
-        'cookies': cookies,
-    }
+    if not info.get('filename'):
+        info['filename'] = 'terabox_file'
+    return info
 
 def get_platform_from_url(url):
     """Detect which platform the URL is from"""
@@ -248,10 +200,27 @@ def build_video_format_string(format_id, output_format):
     if format_id in ['best', 'worst']:
         return format_id
     if output_format == 'mp4':
-        preferred_video = f"{format_id}[ext=mp4][vcodec^=avc1]/bestvideo[ext=mp4][vcodec^=avc1]"
-        preferred_audio = "bestaudio[ext=m4a]/bestaudio"
-        fallback_combo = "bestvideo[ext=mp4]+bestaudio/bestvideo+bestaudio"
-        return f"{preferred_video}+{preferred_audio}/{fallback_combo}"
+        # Prefer MP4-friendly video/audio combos to avoid incompatible merges (e.g., webm audio)
+        preferred_videos = [
+            f"{format_id}[ext=mp4][vcodec^=avc1]",
+            "bestvideo[ext=mp4][vcodec^=avc1]",
+            "bestvideo[vcodec^=avc1]"
+        ]
+        preferred_audios = [
+            "bestaudio[ext=m4a]",
+            "bestaudio[acodec^=mp4a]",
+            "bestaudio[acodec^=aac]"
+        ]
+        fallback_parts = [
+            "bestvideo[ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]",
+            "best[ext=mp4]",
+            "best"
+        ]
+        fallback_combo = "/".join(fallback_parts)
+        preferred_video_combo = "/".join(preferred_videos)
+        preferred_audio_combo = "/".join(preferred_audios)
+        preferred_combo = f"{preferred_video_combo}+{preferred_audio_combo}"
+        return f"{preferred_combo}/{fallback_combo}"
     fallback_combo = f"bestvideo[ext={output_format}]+bestaudio/bestvideo+bestaudio"
     return f'{format_id}+bestaudio/{fallback_combo}'
 
@@ -621,6 +590,23 @@ def perform_download(download_id, url, format_type, format_id, output_format, co
                         'error': 'Could not extract video information'
                     }
                     return
+                
+                def is_mp4_copy_safe(info_data):
+                    formats = info_data.get('formats') or []
+                    video_fmt = next((f for f in formats if f.get('format_id') == format_id), {})
+                    video_codec = (video_fmt.get('vcodec') or '').lower()
+                    audio_codec = (video_fmt.get('acodec') or '').lower()
+                    avc_ok = video_codec and video_codec != 'none' and (video_codec.startswith('avc') or video_codec.startswith('h264'))
+                    aac_in_video = audio_codec and audio_codec != 'none' and (audio_codec.startswith('mp4a') or audio_codec.startswith('aac'))
+                    has_m4a_audio = any(
+                        (fmt.get('acodec') or '').lower().startswith(('mp4a', 'aac')) and fmt.get('vcodec') == 'none'
+                        for fmt in formats
+                    )
+                    return avc_ok and (aac_in_video or has_m4a_audio)
+
+                if output_format == 'mp4' and platform in ('facebook', 'instagram') and is_mp4_copy_safe(info):
+                    ydl.params.setdefault('postprocessor_args', {})
+                    ydl.params['postprocessor_args']['FFmpegVideoConvertor'] = list(FASTSTART_ARGS) + ['-c:v', 'copy', '-c:a', 'copy']
                 
                 # Get the title for filename
                 title = info.get('title', 'video')
