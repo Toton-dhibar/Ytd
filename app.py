@@ -589,13 +589,12 @@ def perform_download(download_id, url, format_type, format_id, output_format, co
             
             # Set up video post-processing for format conversion
             postprocessors = []
-            convertor_entry = None
+            convertor_entry = {
+                'key': 'FFmpegVideoConvertor',
+                'preferredformat': output_format,
+            }
             has_convertor = False
             if output_format in ['mp4', 'mkv', 'avi', 'mov', 'webm', 'flv', '3gp']:
-                convertor_entry = {
-                    'key': 'FFmpegVideoConvertor',
-                    'preferredformat': output_format,
-                }
                 postprocessors.append(convertor_entry)
                 has_convertor = True
             
@@ -605,10 +604,6 @@ def perform_download(download_id, url, format_type, format_id, output_format, co
                 'add_metadata': True,
             })
             if platform_requires_h264(platform) and format_type != 'audio' and not has_convertor:
-                convertor_entry = convertor_entry or {
-                    'key': 'FFmpegVideoConvertor',
-                    'preferredformat': output_format,
-                }
                 postprocessors.insert(0, convertor_entry)
                 has_convertor = True
             
