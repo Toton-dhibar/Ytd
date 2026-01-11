@@ -451,8 +451,9 @@ def perform_download(download_id, url, format_type, format_id, output_format, co
     temp_dir = tempfile.mkdtemp(dir='/tmp')
     try:
         platform = get_platform_from_url(url)
-        if platform_requires_h264(platform) and format_type != 'audio':
+        if platform_requires_h264(platform) and format_type != 'audio' and output_format != 'mp4':
             output_format = 'mp4'
+            print(f"Forcing MP4 output for {platform} to maintain playback compatibility")
         if platform == 'terabox':
             cookies_path = os.path.join(app.config['COOKIES_FOLDER'], cookies_file) if cookies_file else None
             info = get_terabox_file_info(url, cookies_path)
@@ -589,11 +590,12 @@ def perform_download(download_id, url, format_type, format_id, output_format, co
             
             # Set up video post-processing for format conversion
             postprocessors = []
-            convertor_entry = {
-                'key': 'FFmpegVideoConvertor',
-                'preferredformat': output_format,
-            }
+            convertor_entry = None
             if output_format in ['mp4', 'mkv', 'avi', 'mov', 'webm', 'flv', '3gp']:
+                convertor_entry = {
+                    'key': 'FFmpegVideoConvertor',
+                    'preferredformat': output_format,
+                }
                 postprocessors.append(convertor_entry)
             has_convertor = any(pp.get('key') == 'FFmpegVideoConvertor' for pp in postprocessors)
             
@@ -603,6 +605,11 @@ def perform_download(download_id, url, format_type, format_id, output_format, co
                 'add_metadata': True,
             })
             if platform_requires_h264(platform) and format_type != 'audio' and not has_convertor:
+                if not convertor_entry:
+                    convertor_entry = {
+                        'key': 'FFmpegVideoConvertor',
+                        'preferredformat': output_format,
+                    }
                 postprocessors.insert(0, convertor_entry)
                 has_convertor = True
             
