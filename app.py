@@ -592,6 +592,13 @@ def perform_download(download_id, url, format_type, format_id, output_format, co
                 'key': 'FFmpegMetadata',
                 'add_metadata': True,
             })
+            if platform in PLATFORMS_REQUIRE_H264 and format_type != 'audio':
+                has_convertor = any(pp.get('key') == 'FFmpegVideoConvertor' for pp in postprocessors)
+                if not has_convertor:
+                    postprocessors.insert(0, {
+                        'key': 'FFmpegVideoConvertor',
+                        'preferedformat': output_format,
+                    })
             
             if postprocessors:
                 ydl_opts['postprocessors'] = postprocessors
