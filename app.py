@@ -33,7 +33,10 @@ DOWNLOADS_DIR = 'downloads'
 os.makedirs(DOWNLOADS_DIR, exist_ok=True)
 
 FASTSTART_ARGS = ['-movflags', '+faststart']
-MP4_SAFE_ARGS = ['-c:v', 'libx264', '-profile:v', 'high', '-level', '4.0', '-c:a', 'aac', '-b:a', '192k', '-ac', '2']
+MP4_SAFE_ARGS = ['-c:v', 'libx264', '-profile:v', 'high', '-level', '4.0', '-c:a', 'aac', '-b:a', '192k', '-ac', '2', '-pix_fmt', 'yuv420p']
+PLATFORMS_REQUIRE_H264 = {'facebook', 'instagram'}
+def platform_requires_h264(platform):
+    return platform in PLATFORMS_REQUIRE_H264
 ALLOWED_MIME_TYPES = {
     'mp4': 'video/mp4',
     'mkv': 'video/x-matroska',
@@ -195,10 +198,34 @@ def get_safe_filename(title, format_type, format_ext, max_length=150):
     
     return filename
 
-def build_video_format_string(format_id, output_format):
+def get_format_sort_for_platform(platform):
+    if platform_requires_h264(platform):
+        return ['vcodec:avc1', 'acodec:aac', 'ext:mp4:m4a', 'proto:https', 'res', 'fps']
+    return None
+
+def needs_h264_conversion(platform, format_type):
+    return platform_requires_h264(platform) and format_type != 'audio'
+
+def build_video_format_string(format_id, output_format, platform=None):
     """Build a resilient yt-dlp format string that keeps audio/video together"""
     if format_id in ['best', 'worst']:
         return format_id
+    prefers_h264 = platform_requires_h264(platform)
+    if prefers_h264:
+        preferred_videos = [
+            f"{format_id}[ext=mp4][vcodec^=avc1]",
+            f"{format_id}[vcodec^=avc1]",
+            "bestvideo[ext=mp4][vcodec^=avc1]",
+            "bestvideo[vcodec^=avc1]",
+            "bestvideo"
+        ]
+        preferred_audios = [
+            "bestaudio[ext=m4a]",
+            "bestaudio[acodec^=mp4a]",
+            "bestaudio[acodec^=aac]",
+            "bestaudio"
+        ]
+        return f"{'/'.join(preferred_videos)}+{'/'.join(preferred_audios)}/best"
     if output_format == 'mp4':
         # Prefer MP4-friendly video/audio combos to avoid incompatible merges (e.g., webm audio)
         preferred_videos = [
@@ -390,7 +417,7 @@ def download_video():
         url = data.get('url')
         format_type = data.get('format_type')  # 'video' or 'audio'
         format_id = data.get('format_id')  # The specific format ID selected by user
-        output_format = data.get('output_format', 'mp4')  # Final output format
+        output_format = data.get('output_format') or data.get('format') or 'mp4'  # Final output format
         
         if not url:
             return jsonify({'error': 'URL is required'}), 400
@@ -427,6 +454,9 @@ def perform_download(download_id, url, format_type, format_id, output_format, co
     temp_dir = tempfile.mkdtemp(dir='/tmp')
     try:
         platform = get_platform_from_url(url)
+        if needs_h264_conversion(platform, format_type) and output_format != 'mp4':
+            output_format = 'mp4'
+            print(f"Forcing MP4 output for {platform} to maintain playback compatibility")
         if platform == 'terabox':
             cookies_path = os.path.join(app.config['COOKIES_FOLDER'], cookies_file) if cookies_file else None
             info = get_terabox_file_info(url, cookies_path)
@@ -523,6 +553,9 @@ def perform_download(download_id, url, format_type, format_id, output_format, co
             'extractor_retries': 3,
             'retries': 3,
         }
+        sort_rules = get_format_sort_for_platform(platform)
+        if sort_rules and format_type != 'audio':
+            ydl_opts['format_sort'] = sort_rules
         
         # Add cookies if available
         if cookies_file:
@@ -555,29 +588,40 @@ def perform_download(download_id, url, format_type, format_id, output_format, co
                 
         else:  # video
             # For video downloads, ensure we get both video and audio
-            ydl_opts['format'] = build_video_format_string(format_id, output_format)
+            ydl_opts['format'] = build_video_format_string(format_id, output_format, platform)
             
             # Set up video post-processing for format conversion
             postprocessors = []
-            
+            convertor_entry = None
+            has_convertor = False
             if output_format in ['mp4', 'mkv', 'avi', 'mov', 'webm', 'flv', '3gp']:
-                postprocessors.append({
+                convertor_entry = {
                     'key': 'FFmpegVideoConvertor',
-                    'preferedformat': output_format,
-                })
+                    'preferredformat': output_format,
+                }
+                postprocessors.append(convertor_entry)
+                has_convertor = True
             
             # Always add metadata and ensure proper encoding for compatibility
             postprocessors.append({
                 'key': 'FFmpegMetadata',
                 'add_metadata': True,
             })
+            if needs_h264_conversion(platform, format_type) and not has_convertor:
+                convertor_entry = {
+                    'key': 'FFmpegVideoConvertor',
+                    'preferredformat': output_format,
+                }
+                postprocessors.insert(0, convertor_entry)
+                has_convertor = True
             
             if postprocessors:
                 ydl_opts['postprocessors'] = postprocessors
-                ffmpeg_args = list(FASTSTART_ARGS)
-                if output_format == 'mp4':
-                    ffmpeg_args.extend(MP4_SAFE_ARGS)
-                ydl_opts['postprocessor_args'] = {'FFmpegVideoConvertor': ffmpeg_args}
+                if has_convertor:
+                    ffmpeg_args = list(FASTSTART_ARGS)
+                    if output_format == 'mp4':
+                        ffmpeg_args.extend(MP4_SAFE_ARGS)
+                    ydl_opts['postprocessor_args'] = {'FFmpegVideoConvertor': ffmpeg_args}
         
         # Download the video
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:

@@ -192,6 +192,16 @@ YT/
 3. **Port already in use**: Change the port in `app.py` or kill the process using the port
 4. **Download fails**: Check if the video URL is valid and accessible
 
+### Facebook/Instagram video tips
+
+- These platforms often serve DASH/HLS streams where video and audio are separate; if you pick a video-only format you will only get video (and no sound). The app now prefers AVC/H.264 video + AAC audio and always merges them into an MP4 with `+faststart` so the `moov` atom stays at the beginning.
+- When the only available video codec is AV1/VP9, the downloader re-encodes to H.264/AAC for broad device support (Android gallery, WhatsApp/Telegram share, VLC).
+- If you need a manual fix or want to post-process an existing file, run:  
+  ```bash
+  ffmpeg -i input.mp4 -c:v libx264 -preset medium -profile:v high -level 4.0 -pix_fmt yuv420p -c:a aac -b:a 192k -ac 2 -movflags +faststart output.mp4
+  ```
+- Best practices: prefer MP4 containers, keep a cookies file for private reels, and let yt-dlp pick `bestvideo+bestaudio` with AVC/AAC when available. If a manifest lists only fragmented MP4, always remux/re-encode with the command above to ensure metadata and duration are correct.
+
 ### Performance Optimization
 
 For better performance on limited resources:
