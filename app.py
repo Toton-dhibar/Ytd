@@ -591,23 +591,6 @@ def perform_download(download_id, url, format_type, format_id, output_format, co
                     }
                     return
                 
-                def is_mp4_copy_safe(info_data):
-                    formats = info_data.get('formats') or []
-                    video_fmt = next((f for f in formats if f.get('format_id') == format_id), {})
-                    video_codec = (video_fmt.get('vcodec') or '').lower()
-                    audio_codec = (video_fmt.get('acodec') or '').lower()
-                    avc_ok = video_codec and video_codec != 'none' and (video_codec.startswith('avc') or video_codec.startswith('h264'))
-                    aac_in_video = audio_codec and audio_codec != 'none' and (audio_codec.startswith('mp4a') or audio_codec.startswith('aac'))
-                    has_m4a_audio = any(
-                        (fmt.get('acodec') or '').lower().startswith(('mp4a', 'aac')) and fmt.get('vcodec') == 'none'
-                        for fmt in formats
-                    )
-                    return avc_ok and (aac_in_video or has_m4a_audio)
-
-                if output_format == 'mp4' and platform in ('facebook', 'instagram') and is_mp4_copy_safe(info):
-                    ydl.params.setdefault('postprocessor_args', {})
-                    ydl.params['postprocessor_args']['FFmpegVideoConvertor'] = list(FASTSTART_ARGS) + ['-c:v', 'copy', '-c:a', 'copy']
-                
                 # Get the title for filename
                 title = info.get('title', 'video')
                 safe_filename = get_safe_filename(title, format_type, output_format)
