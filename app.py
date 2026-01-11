@@ -575,6 +575,7 @@ def perform_download(download_id, url, format_type, format_id, output_format, co
         else:  # video
             # For video downloads, ensure we get both video and audio
             ydl_opts['format'] = build_video_format_string(format_id, output_format, platform)
+            ydl_opts['recode_video'] = output_format
             
             # Set up video post-processing for format conversion
             postprocessors = []
@@ -583,7 +584,6 @@ def perform_download(download_id, url, format_type, format_id, output_format, co
                 postprocessors.append({
                     'key': 'FFmpegVideoConvertor',
                     'preferredformat': output_format,
-                    'preferedformat': output_format,
                 })
             
             # Always add metadata and ensure proper encoding for compatibility
@@ -597,7 +597,6 @@ def perform_download(download_id, url, format_type, format_id, output_format, co
                     postprocessors.insert(0, {
                         'key': 'FFmpegVideoConvertor',
                         'preferredformat': output_format,
-                        'preferedformat': output_format,
                     })
             
             if postprocessors:
