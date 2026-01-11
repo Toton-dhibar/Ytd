@@ -586,18 +586,18 @@ def perform_download(download_id, url, format_type, format_id, output_format, co
         else:  # video
             # For video downloads, ensure we get both video and audio
             ydl_opts['format'] = build_video_format_string(format_id, output_format, platform)
-            ydl_opts['recode_video'] = output_format
             
             # Set up video post-processing for format conversion
             postprocessors = []
             convertor_entry = None
+            has_convertor = False
             if output_format in ['mp4', 'mkv', 'avi', 'mov', 'webm', 'flv', '3gp']:
                 convertor_entry = {
                     'key': 'FFmpegVideoConvertor',
                     'preferredformat': output_format,
                 }
                 postprocessors.append(convertor_entry)
-            has_convertor = any(pp.get('key') == 'FFmpegVideoConvertor' for pp in postprocessors)
+                has_convertor = True
             
             # Always add metadata and ensure proper encoding for compatibility
             postprocessors.append({
@@ -605,11 +605,10 @@ def perform_download(download_id, url, format_type, format_id, output_format, co
                 'add_metadata': True,
             })
             if platform_requires_h264(platform) and format_type != 'audio' and not has_convertor:
-                if not convertor_entry:
-                    convertor_entry = {
-                        'key': 'FFmpegVideoConvertor',
-                        'preferredformat': output_format,
-                    }
+                convertor_entry = convertor_entry or {
+                    'key': 'FFmpegVideoConvertor',
+                    'preferredformat': output_format,
+                }
                 postprocessors.insert(0, convertor_entry)
                 has_convertor = True
             
