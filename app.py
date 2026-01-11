@@ -35,6 +35,8 @@ os.makedirs(DOWNLOADS_DIR, exist_ok=True)
 FASTSTART_ARGS = ['-movflags', '+faststart']
 MP4_SAFE_ARGS = ['-c:v', 'libx264', '-profile:v', 'high', '-level', '4.0', '-c:a', 'aac', '-b:a', '192k', '-ac', '2', '-pix_fmt', 'yuv420p']
 PLATFORMS_REQUIRE_H264 = {'facebook', 'instagram'}
+def platform_requires_h264(platform):
+    return platform in PLATFORMS_REQUIRE_H264
 ALLOWED_MIME_TYPES = {
     'mp4': 'video/mp4',
     'mkv': 'video/x-matroska',
@@ -197,7 +199,7 @@ def get_safe_filename(title, format_type, format_ext, max_length=150):
     return filename
 
 def get_format_sort_for_platform(platform):
-    if platform in PLATFORMS_REQUIRE_H264:
+    if platform_requires_h264(platform):
         return ['vcodec:avc1', 'acodec:aac', 'ext:mp4:m4a', 'proto:https', 'res', 'fps']
     return None
 
@@ -205,7 +207,7 @@ def build_video_format_string(format_id, output_format, platform=None):
     """Build a resilient yt-dlp format string that keeps audio/video together"""
     if format_id in ['best', 'worst']:
         return format_id
-    prefers_h264 = bool(get_format_sort_for_platform(platform))
+    prefers_h264 = platform_requires_h264(platform)
     if prefers_h264:
         preferred_videos = [
             f"{format_id}[ext=mp4][vcodec^=avc1]",
@@ -449,6 +451,8 @@ def perform_download(download_id, url, format_type, format_id, output_format, co
     temp_dir = tempfile.mkdtemp(dir='/tmp')
     try:
         platform = get_platform_from_url(url)
+        if platform_requires_h264(platform) and format_type != 'audio':
+            output_format = 'mp4'
         if platform == 'terabox':
             cookies_path = os.path.join(app.config['COOKIES_FOLDER'], cookies_file) if cookies_file else None
             info = get_terabox_file_info(url, cookies_path)
@@ -598,7 +602,7 @@ def perform_download(download_id, url, format_type, format_id, output_format, co
                 'key': 'FFmpegMetadata',
                 'add_metadata': True,
             })
-            if platform in PLATFORMS_REQUIRE_H264 and format_type != 'audio' and not has_convertor:
+            if platform_requires_h264(platform) and format_type != 'audio' and not has_convertor:
                 postprocessors.insert(0, convertor_entry)
                 has_convertor = True
             
