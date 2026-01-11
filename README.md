@@ -194,7 +194,7 @@ YT/
 
 ### Facebook/Instagram video tips
 
-- These platforms often serve DASH/HLS streams where video and audio are separate; if you pick a video-only format you will only get audio. The app now prefers AVC/H.264 video + AAC audio and always merges them into an MP4 with `+faststart` so the `moov` atom stays at the beginning.
+- These platforms often serve DASH/HLS streams where video and audio are separate; if you pick a video-only format you will only get video (and no sound). The app now prefers AVC/H.264 video + AAC audio and always merges them into an MP4 with `+faststart` so the `moov` atom stays at the beginning.
 - When the only available video codec is AV1/VP9, the downloader re-encodes to H.264/AAC for broad device support (Android gallery, WhatsApp/Telegram share, VLC).
 - If you need a manual fix or want to post-process an existing file, run:  
   ```bash

@@ -264,8 +264,6 @@ def get_formats():
         # Get appropriate cookie file for this URL
         cookies_file = get_cookie_file_for_url(url)
         platform = get_platform_from_url(url)
-        if platform in PLATFORMS_REQUIRE_H264 and format_type != 'audio':
-            output_format = 'mp4'
         if platform == 'terabox' and not cookies_file:
             return jsonify({'error': 'TeraBox downloads require a valid cookies file in the cookies directory'}), 400
 
@@ -584,6 +582,7 @@ def perform_download(download_id, url, format_type, format_id, output_format, co
             if output_format in ['mp4', 'mkv', 'avi', 'mov', 'webm', 'flv', '3gp']:
                 postprocessors.append({
                     'key': 'FFmpegVideoConvertor',
+                    'preferredformat': output_format,
                     'preferedformat': output_format,
                 })
             
@@ -597,6 +596,7 @@ def perform_download(download_id, url, format_type, format_id, output_format, co
                 if not has_convertor:
                     postprocessors.insert(0, {
                         'key': 'FFmpegVideoConvertor',
+                        'preferredformat': output_format,
                         'preferedformat': output_format,
                     })
             
