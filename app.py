@@ -33,7 +33,8 @@ DOWNLOADS_DIR = 'downloads'
 os.makedirs(DOWNLOADS_DIR, exist_ok=True)
 
 FASTSTART_ARGS = ['-movflags', '+faststart']
-MP4_SAFE_ARGS = ['-c:v', 'libx264', '-profile:v', 'high', '-level', '4.0', '-c:a', 'aac', '-b:a', '192k', '-ac', '2']
+MP4_SAFE_ARGS = ['-c:v', 'libx264', '-profile:v', 'high', '-level', '4.0', '-c:a', 'aac', '-b:a', '192k', '-ac', '2', '-pix_fmt', 'yuv420p']
+PLATFORMS_REQUIRE_H264 = {'facebook', 'instagram'}
 ALLOWED_MIME_TYPES = {
     'mp4': 'video/mp4',
     'mkv': 'video/x-matroska',
@@ -195,10 +196,26 @@ def get_safe_filename(title, format_type, format_ext, max_length=150):
     
     return filename
 
-def build_video_format_string(format_id, output_format):
+def build_video_format_string(format_id, output_format, platform=None):
     """Build a resilient yt-dlp format string that keeps audio/video together"""
     if format_id in ['best', 'worst']:
         return format_id
+    prefers_h264 = platform in PLATFORMS_REQUIRE_H264
+    if prefers_h264:
+        preferred_videos = [
+            f"{format_id}[ext=mp4][vcodec^=avc1]",
+            f"{format_id}[vcodec^=avc1]",
+            "bestvideo[ext=mp4][vcodec^=avc1]",
+            "bestvideo[vcodec^=avc1]",
+            "bestvideo"
+        ]
+        preferred_audios = [
+            "bestaudio[ext=m4a]",
+            "bestaudio[acodec^=mp4a]",
+            "bestaudio[acodec^=aac]",
+            "bestaudio"
+        ]
+        return f"{'/'.join(preferred_videos)}+{'/'.join(preferred_audios)}/best"
     if output_format == 'mp4':
         # Prefer MP4-friendly video/audio combos to avoid incompatible merges (e.g., webm audio)
         preferred_videos = [
@@ -247,6 +264,8 @@ def get_formats():
         # Get appropriate cookie file for this URL
         cookies_file = get_cookie_file_for_url(url)
         platform = get_platform_from_url(url)
+        if platform in PLATFORMS_REQUIRE_H264 and format_type != 'audio':
+            output_format = 'mp4'
         if platform == 'terabox' and not cookies_file:
             return jsonify({'error': 'TeraBox downloads require a valid cookies file in the cookies directory'}), 400
 
@@ -390,7 +409,7 @@ def download_video():
         url = data.get('url')
         format_type = data.get('format_type')  # 'video' or 'audio'
         format_id = data.get('format_id')  # The specific format ID selected by user
-        output_format = data.get('output_format', 'mp4')  # Final output format
+        output_format = data.get('output_format') or data.get('format') or 'mp4'  # Final output format
         
         if not url:
             return jsonify({'error': 'URL is required'}), 400
@@ -523,6 +542,8 @@ def perform_download(download_id, url, format_type, format_id, output_format, co
             'extractor_retries': 3,
             'retries': 3,
         }
+        if platform in PLATFORMS_REQUIRE_H264 and format_type != 'audio':
+            ydl_opts['format_sort'] = ['vcodec:avc1', 'acodec:aac', 'ext:mp4:m4a', 'proto:https', 'res', 'fps']
         
         # Add cookies if available
         if cookies_file:
@@ -555,7 +576,7 @@ def perform_download(download_id, url, format_type, format_id, output_format, co
                 
         else:  # video
             # For video downloads, ensure we get both video and audio
-            ydl_opts['format'] = build_video_format_string(format_id, output_format)
+            ydl_opts['format'] = build_video_format_string(format_id, output_format, platform)
             
             # Set up video post-processing for format conversion
             postprocessors = []
@@ -574,10 +595,11 @@ def perform_download(download_id, url, format_type, format_id, output_format, co
             
             if postprocessors:
                 ydl_opts['postprocessors'] = postprocessors
-                ffmpeg_args = list(FASTSTART_ARGS)
-                if output_format == 'mp4':
-                    ffmpeg_args.extend(MP4_SAFE_ARGS)
-                ydl_opts['postprocessor_args'] = {'FFmpegVideoConvertor': ffmpeg_args}
+                if any(pp.get('key') == 'FFmpegVideoConvertor' for pp in postprocessors):
+                    ffmpeg_args = list(FASTSTART_ARGS)
+                    if output_format == 'mp4':
+                        ffmpeg_args.extend(MP4_SAFE_ARGS)
+                    ydl_opts['postprocessor_args'] = {'FFmpegVideoConvertor': ffmpeg_args}
         
         # Download the video
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
