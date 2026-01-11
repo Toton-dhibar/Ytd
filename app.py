@@ -203,6 +203,9 @@ def get_format_sort_for_platform(platform):
         return ['vcodec:avc1', 'acodec:aac', 'ext:mp4:m4a', 'proto:https', 'res', 'fps']
     return None
 
+def needs_h264_conversion(platform, format_type):
+    return platform_requires_h264(platform) and format_type != 'audio'
+
 def build_video_format_string(format_id, output_format, platform=None):
     """Build a resilient yt-dlp format string that keeps audio/video together"""
     if format_id in ['best', 'worst']:
@@ -451,7 +454,7 @@ def perform_download(download_id, url, format_type, format_id, output_format, co
     temp_dir = tempfile.mkdtemp(dir='/tmp')
     try:
         platform = get_platform_from_url(url)
-        if platform_requires_h264(platform) and format_type != 'audio' and output_format != 'mp4':
+        if needs_h264_conversion(platform, format_type) and output_format != 'mp4':
             output_format = 'mp4'
             print(f"Forcing MP4 output for {platform} to maintain playback compatibility")
         if platform == 'terabox':
@@ -589,12 +592,13 @@ def perform_download(download_id, url, format_type, format_id, output_format, co
             
             # Set up video post-processing for format conversion
             postprocessors = []
-            convertor_entry = {
-                'key': 'FFmpegVideoConvertor',
-                'preferredformat': output_format,
-            }
+            convertor_entry = None
             has_convertor = False
             if output_format in ['mp4', 'mkv', 'avi', 'mov', 'webm', 'flv', '3gp']:
+                convertor_entry = {
+                    'key': 'FFmpegVideoConvertor',
+                    'preferredformat': output_format,
+                }
                 postprocessors.append(convertor_entry)
                 has_convertor = True
             
@@ -603,7 +607,11 @@ def perform_download(download_id, url, format_type, format_id, output_format, co
                 'key': 'FFmpegMetadata',
                 'add_metadata': True,
             })
-            if platform_requires_h264(platform) and format_type != 'audio' and not has_convertor:
+            if needs_h264_conversion(platform, format_type) and not has_convertor:
+                convertor_entry = {
+                    'key': 'FFmpegVideoConvertor',
+                    'preferredformat': output_format,
+                }
                 postprocessors.insert(0, convertor_entry)
                 has_convertor = True
             
