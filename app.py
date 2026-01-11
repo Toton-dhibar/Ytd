@@ -597,7 +597,7 @@ def perform_download(download_id, url, format_type, format_id, output_format, co
             if output_format in ['mp4', 'mkv', 'avi', 'mov', 'webm', 'flv', '3gp']:
                 convertor_entry = {
                     'key': 'FFmpegVideoConvertor',
-                    'preferredformat': output_format,
+                    'preferedformat': output_format,
                 }
                 postprocessors.append(convertor_entry)
                 has_convertor = True
@@ -610,7 +610,7 @@ def perform_download(download_id, url, format_type, format_id, output_format, co
             if needs_h264_conversion(platform, format_type) and not has_convertor:
                 convertor_entry = {
                     'key': 'FFmpegVideoConvertor',
-                    'preferredformat': output_format,
+                    'preferedformat': output_format,
                 }
                 postprocessors.insert(0, convertor_entry)
                 has_convertor = True
