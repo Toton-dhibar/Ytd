@@ -196,11 +196,16 @@ def get_safe_filename(title, format_type, format_ext, max_length=150):
     
     return filename
 
+def get_format_sort_for_platform(platform):
+    if platform in PLATFORMS_REQUIRE_H264:
+        return ['vcodec:avc1', 'acodec:aac', 'ext:mp4:m4a', 'proto:https', 'res', 'fps']
+    return None
+
 def build_video_format_string(format_id, output_format, platform=None):
     """Build a resilient yt-dlp format string that keeps audio/video together"""
     if format_id in ['best', 'worst']:
         return format_id
-    prefers_h264 = platform in PLATFORMS_REQUIRE_H264
+    prefers_h264 = bool(get_format_sort_for_platform(platform))
     if prefers_h264:
         preferred_videos = [
             f"{format_id}[ext=mp4][vcodec^=avc1]",
@@ -540,8 +545,9 @@ def perform_download(download_id, url, format_type, format_id, output_format, co
             'extractor_retries': 3,
             'retries': 3,
         }
-        if platform in PLATFORMS_REQUIRE_H264 and format_type != 'audio':
-            ydl_opts['format_sort'] = ['vcodec:avc1', 'acodec:aac', 'ext:mp4:m4a', 'proto:https', 'res', 'fps']
+        sort_rules = get_format_sort_for_platform(platform)
+        if sort_rules and format_type != 'audio':
+            ydl_opts['format_sort'] = sort_rules
         
         # Add cookies if available
         if cookies_file:
@@ -579,29 +585,26 @@ def perform_download(download_id, url, format_type, format_id, output_format, co
             
             # Set up video post-processing for format conversion
             postprocessors = []
-            
+            convertor_entry = {
+                'key': 'FFmpegVideoConvertor',
+                'preferredformat': output_format,
+            }
             if output_format in ['mp4', 'mkv', 'avi', 'mov', 'webm', 'flv', '3gp']:
-                postprocessors.append({
-                    'key': 'FFmpegVideoConvertor',
-                    'preferredformat': output_format,
-                })
+                postprocessors.append(convertor_entry)
+            has_convertor = any(pp.get('key') == 'FFmpegVideoConvertor' for pp in postprocessors)
             
             # Always add metadata and ensure proper encoding for compatibility
             postprocessors.append({
                 'key': 'FFmpegMetadata',
                 'add_metadata': True,
             })
-            if platform in PLATFORMS_REQUIRE_H264 and format_type != 'audio':
-                has_convertor = any(pp.get('key') == 'FFmpegVideoConvertor' for pp in postprocessors)
-                if not has_convertor:
-                    postprocessors.insert(0, {
-                        'key': 'FFmpegVideoConvertor',
-                        'preferredformat': output_format,
-                    })
+            if platform in PLATFORMS_REQUIRE_H264 and format_type != 'audio' and not has_convertor:
+                postprocessors.insert(0, convertor_entry)
+                has_convertor = True
             
             if postprocessors:
                 ydl_opts['postprocessors'] = postprocessors
-                if any(pp.get('key') == 'FFmpegVideoConvertor' for pp in postprocessors):
+                if has_convertor:
                     ffmpeg_args = list(FASTSTART_ARGS)
                     if output_format == 'mp4':
                         ffmpeg_args.extend(MP4_SAFE_ARGS)
